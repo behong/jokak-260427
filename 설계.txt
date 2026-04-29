@@ -1,0 +1,46 @@
+1. 목표
+Telethon 라이브러리를 사용하여 특정 텔레그램 채널의 메시지를 실시간 모니터링하고, 가공하여 SQLite 데이터베이스에 저장하는 파이썬 스크립트 작성.
+
+2. 기술 스택
+
+Language: Python 3.x
+
+Library: telethon (MTProto Client), sqlite3
+
+Database: SQLite (파일 처리)
+
+3. DB 설계 (Schema)
+
+Table Name: telegram_logs
+
+Columns:
+
+id: INTEGER, Primary Key, Auto-increment
+
+source: TEXT (방 별칭: 뽐질, 퍼나정, 글반장)
+
+msg_id: INTEGER, UNIQUE (중복 저장 방지)
+
+content: TEXT (가공된 메시지 본문)
+
+created_at: DATETIME (메시지 수신 시간)
+
+saved_at: TIMESTAMP (DB 저장 시간, Default Current_Timestamp)
+
+4. 모니터링 대상 (Target Chats)
+
+-1001047477854 (Alias: 뽐질)
+
+-1002381848987 (Alias: 퍼나정)
+
+-1001038361551 (Alias: 글반장)
+
+5. 핵심 기능 요구사항
+
+Init DB: 스크립트 실행 시 테이블이 없으면 자동 생성하고, source와 created_at 컬럼에 Index를 생성할 것.
+
+Duplicate Check: msg_id가 중복될 경우 INSERT OR IGNORE 처리를 통해 오류 없이 스킵할 것.
+
+Data Processing: 메시지 앞뒤 공백을 제거(strip())하고 저장할 것.
+
+Error Handling: 네트워크 끊김 시 자동 재연결 시도 로직 포함.
