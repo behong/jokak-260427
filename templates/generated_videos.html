@@ -1,0 +1,917 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>생성영상</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f6f8;
+      --panel: #ffffff;
+      --text: #17202a;
+      --muted: #667085;
+      --line: #d7dde5;
+      --accent: #1769aa;
+      --accent-soft: #e7f0f8;
+      --danger: #b42318;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      font-size: 14px;
+    }
+
+    body.modal-open {
+      overflow: hidden;
+      position: fixed;
+      width: 100%;
+    }
+
+    header {
+      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+      padding: 18px 24px;
+    }
+
+    .header-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: start;
+    }
+
+    h1 {
+      margin: 0 0 4px;
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin: 0;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+
+    .subtle {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .top-menu {
+      display: flex;
+      gap: 8px;
+      margin-top: 14px;
+      flex-wrap: wrap;
+    }
+
+    .top-menu a {
+      display: inline-flex;
+      align-items: center;
+      height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 0 12px;
+      color: var(--text);
+      background: #fff;
+      text-decoration: none;
+      font-weight: 700;
+    }
+
+    .top-menu a.active {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: var(--accent-soft);
+    }
+
+    main {
+      width: min(1280px, 100%);
+      margin: 0 auto;
+      padding: 20px 24px 32px;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+    }
+
+    .section-title {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .video-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .video-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 10px;
+      min-width: 0;
+    }
+
+    .video-card video {
+      width: 100%;
+      aspect-ratio: 9 / 16;
+      max-height: 360px;
+      object-fit: contain;
+      background: #000;
+      border-radius: 6px;
+      display: block;
+      margin-bottom: 10px;
+    }
+
+    .video-card.long-card video {
+      aspect-ratio: 16 / 9;
+      max-height: none;
+    }
+
+    .video-card strong {
+      display: block;
+      overflow-wrap: anywhere;
+      line-height: 1.35;
+      margin-bottom: 6px;
+    }
+
+    .video-kind {
+      display: inline-flex;
+      align-items: center;
+      height: 22px;
+      border-radius: 999px;
+      padding: 0 8px;
+      margin: 0 0 6px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .row-tools {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+    }
+
+    button,
+    .mini-button {
+      height: 38px;
+      border: 1px solid var(--accent);
+      border-radius: 6px;
+      background: var(--accent);
+      color: white;
+      font: inherit;
+      font-weight: 600;
+      padding: 0 14px;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .mini-button {
+      height: 32px;
+      font-size: 12px;
+      padding: 0 10px;
+    }
+
+    .secondary,
+    .logout button {
+      background: #fff;
+      color: var(--accent);
+    }
+
+    .danger {
+      border-color: var(--danger);
+      color: var(--danger);
+      background: #fff;
+    }
+
+    input,
+    textarea,
+    select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      color: var(--text);
+      background: #fff;
+      font: inherit;
+    }
+
+    input,
+    select {
+      height: 38px;
+      padding: 0 10px;
+    }
+
+    textarea {
+      min-height: 180px;
+      resize: vertical;
+      padding: 10px 12px;
+      line-height: 1.55;
+    }
+
+    label {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      margin: 12px 0 6px;
+    }
+
+    .empty {
+      grid-column: 1 / -1;
+      padding: 36px 16px;
+      text-align: center;
+      color: var(--muted);
+    }
+
+    .status {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 10px;
+      min-height: 20px;
+    }
+
+    .long-video-bar {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 120px auto;
+      gap: 10px;
+      align-items: end;
+      margin-bottom: 14px;
+      padding-bottom: 14px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .long-video-bar label {
+      margin: 0 0 6px;
+    }
+
+    .long-video-status {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+      overflow-wrap: anywhere;
+    }
+
+    .modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 20;
+      background: rgba(15, 23, 42, 0.72);
+      padding: 24px;
+      overflow: auto;
+    }
+
+    .modal.open {
+      display: block;
+    }
+
+    #closeMetadataModal {
+      position: fixed;
+      right: 20px;
+      top: 16px;
+      width: 42px;
+      height: 42px;
+      border-radius: 50%;
+      padding: 0;
+      font-size: 28px;
+      line-height: 1;
+      z-index: 21;
+    }
+
+    .metadata-panel {
+      width: min(900px, 100%);
+      margin: 40px auto;
+      background: var(--panel);
+      border-radius: 8px;
+      padding: 18px;
+    }
+
+    #metadataStatus {
+      min-height: 24px;
+      font-weight: 700;
+      color: var(--text);
+      overflow-wrap: anywhere;
+    }
+
+    #metadataStatus a,
+    .youtube-state a {
+      color: var(--accent);
+      overflow-wrap: anywhere;
+    }
+
+    .youtube-state {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 12px;
+      background: #f8fafc;
+      font-size: 13px;
+      line-height: 1.55;
+      margin-top: 12px;
+    }
+
+    .youtube-state strong {
+      display: block;
+      color: var(--text);
+      font-size: 14px;
+      margin-bottom: 2px;
+    }
+
+    .upload-confirm {
+      display: none;
+      border: 1px solid #f3c267;
+      border-radius: 8px;
+      background: #fff8e6;
+      color: #713f12;
+      padding: 10px 12px;
+      font-size: 13px;
+      line-height: 1.5;
+      margin-top: 12px;
+    }
+
+    .upload-confirm.open {
+      display: block;
+    }
+
+    @media (max-width: 960px) {
+      .video-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
+    @media (max-width: 640px) {
+      header { padding: 16px; }
+      main { padding: 16px; }
+      .header-row,
+      .section-title {
+        align-items: stretch;
+        flex-direction: column;
+      }
+      .long-video-bar {
+        grid-template-columns: 1fr;
+      }
+      .video-grid { grid-template-columns: 1fr; }
+      .modal { padding: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-row">
+      <div>
+        <h1>생성영상</h1>
+        <div class="subtle">DB: {{ db_path }}</div>
+      </div>
+      {% if auth_enabled %}
+      <form class="logout" method="post" action="/logout">
+        <button type="submit">로그아웃</button>
+      </form>
+      {% endif %}
+    </div>
+    <nav class="top-menu" aria-label="상단 메뉴">
+      <a href="/">대시보드</a>
+      <a href="/manual">수동 좋은글</a>
+      <a class="active" href="/generated-videos">생성영상</a>
+      <a href="/background-library">배경영상</a>
+      <a href="/settings">운영 설정</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="panel" aria-label="생성영상">
+      <div class="long-video-bar">
+        <div>
+          <label>업로드 완료 영상 묶기</label>
+          <div class="long-video-status" id="longVideoStatus">이미 긴영상에 사용한 짧은 영상은 제외하고 10분 이상으로 만듭니다.</div>
+        </div>
+        <div>
+          <label for="longVideoCount">최대 개수</label>
+          <select id="longVideoCount">
+            <option value="40" selected>40개</option>
+            <option value="30">30개</option>
+            <option value="20">20개</option>
+          </select>
+        </div>
+        <button class="secondary" type="button" id="createLongVideo">긴영상 만들기</button>
+      </div>
+      <div class="section-title">
+        <div>
+          <h2>생성영상</h2>
+          <div class="subtle" id="videoLibraryStatus">불러오는 중</div>
+        </div>
+        <button class="secondary" type="button" id="refreshVideoLibrary">새로고침</button>
+      </div>
+      <div class="video-grid" id="videoLibrary"></div>
+      <div class="status" id="pageStatus"></div>
+    </section>
+  </main>
+
+  <div class="modal" id="metadataModal" aria-hidden="true">
+    <button type="button" id="closeMetadataModal" aria-label="닫기">&times;</button>
+    <div class="metadata-panel">
+      <h2>유튜브 정보</h2>
+      <div class="subtle" id="metadataStatus"></div>
+      <label for="youtubeTitle">제목</label>
+      <input id="youtubeTitle" type="text">
+      <label for="youtubeDescription">설명</label>
+      <textarea id="youtubeDescription"></textarea>
+      <label for="youtubeTags">태그</label>
+      <input id="youtubeTags" type="text">
+      <label for="youtubePrivacy">공개 상태</label>
+      <select id="youtubePrivacy">
+        <option value="private">비공개</option>
+        <option value="unlisted">일부 공개</option>
+        <option value="public">공개</option>
+      </select>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:12px;color:var(--text);font-size:13px;">
+        <input id="youtubeSchedulePublish" type="checkbox" checked style="width:auto;height:auto;">
+        평일 점심/저녁 랜덤 예약 업로드
+      </label>
+      <div class="subtle">체크하면 오늘 기준으로 평일 12~13시 또는 18~21시 중 가능한 시간에 예약됩니다.</div>
+      <div class="youtube-state" id="youtubeState">
+        <strong>상태 확인 전</strong>
+        <span>인증과 업로드 이력을 확인합니다.</span>
+      </div>
+      <div class="upload-confirm" id="uploadConfirm">
+        이 영상은 현재 설정으로 YouTube에 업로드됩니다. 한 번 더 누르면 실제 업로드를 시작합니다.
+      </div>
+      <div class="row-tools">
+        <button class="mini-button" type="button" id="copyYoutubeTitle">제목 복사</button>
+        <button class="mini-button" type="button" id="copyYoutubeDescription">설명 복사</button>
+        <button class="mini-button" type="button" id="copyYoutubeTags">태그 복사</button>
+        <button class="mini-button" type="button" id="authYoutube">유튜브 인증</button>
+        <button class="mini-button" type="button" id="uploadYoutube">유튜브 업로드</button>
+        <button class="mini-button" type="button" id="syncYoutube">YouTube 불러오기</button>
+        <button class="mini-button" type="button" id="updateYoutube">YouTube 수정</button>
+        <a class="mini-button" href="#" target="_blank" rel="noreferrer" id="openYoutubeStudio">Studio</a>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const videoLibrary = document.querySelector("#videoLibrary");
+    const videoLibraryStatus = document.querySelector("#videoLibraryStatus");
+    const refreshVideoLibrary = document.querySelector("#refreshVideoLibrary");
+    const pageStatus = document.querySelector("#pageStatus");
+    const longVideoStatus = document.querySelector("#longVideoStatus");
+    const longVideoCount = document.querySelector("#longVideoCount");
+    const createLongVideo = document.querySelector("#createLongVideo");
+    const metadataModal = document.querySelector("#metadataModal");
+    const closeMetadataModal = document.querySelector("#closeMetadataModal");
+    const metadataStatus = document.querySelector("#metadataStatus");
+    const youtubeTitle = document.querySelector("#youtubeTitle");
+    const youtubeDescription = document.querySelector("#youtubeDescription");
+    const youtubeTags = document.querySelector("#youtubeTags");
+    const youtubePrivacy = document.querySelector("#youtubePrivacy");
+    const youtubeSchedulePublish = document.querySelector("#youtubeSchedulePublish");
+    const youtubeState = document.querySelector("#youtubeState");
+    const uploadConfirm = document.querySelector("#uploadConfirm");
+    const copyYoutubeTitle = document.querySelector("#copyYoutubeTitle");
+    const copyYoutubeDescription = document.querySelector("#copyYoutubeDescription");
+    const copyYoutubeTags = document.querySelector("#copyYoutubeTags");
+    const authYoutube = document.querySelector("#authYoutube");
+    const uploadYoutube = document.querySelector("#uploadYoutube");
+    const syncYoutube = document.querySelector("#syncYoutube");
+    const updateYoutube = document.querySelector("#updateYoutube");
+    const openYoutubeStudio = document.querySelector("#openYoutubeStudio");
+
+    let currentMetadataFilename = "";
+    let currentYoutubeConfig = null;
+    let currentYoutubeUpload = null;
+    let uploadArmed = false;
+    let scrollYBeforeModal = 0;
+
+    function uploadButtonDefaultText() {
+      return youtubeSchedulePublish && youtubeSchedulePublish.checked ? "예약 업로드" : "유튜브 업로드";
+    }
+
+    function escapeText(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function formatDate(value) {
+      if (!value) return "-";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return value;
+      return date.toLocaleString();
+    }
+
+    function formatBytes(bytes) {
+      const value = Number(bytes || 0);
+      if (value < 1024) return `${value}B`;
+      if (value < 1024 * 1024) return `${Math.round(value / 1024)}KB`;
+      if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)}MB`;
+      return `${(value / 1024 / 1024 / 1024).toFixed(2)}GB`;
+    }
+
+    function videoLabel(video) {
+      if (video.title) return video.title;
+      if (video.log_id) return `영상 #${video.log_id}`;
+      return video.filename;
+    }
+
+    function openModal(modal) {
+      scrollYBeforeModal = window.scrollY;
+      document.body.style.top = `-${scrollYBeforeModal}px`;
+      document.body.classList.add("modal-open");
+      modal.classList.add("open");
+      modal.setAttribute("aria-hidden", "false");
+    }
+
+    function closeModalElement(modal) {
+      modal.classList.remove("open");
+      modal.setAttribute("aria-hidden", "true");
+      document.body.classList.remove("modal-open");
+      document.body.style.top = "";
+      window.scrollTo(0, scrollYBeforeModal);
+    }
+
+    async function loadVideoLibrary() {
+      videoLibraryStatus.textContent = "불러오는 중";
+      try {
+        const response = await fetch("/api/videos?limit=50");
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+        const videos = payload.videos || [];
+        if (!videos.length) {
+          videoLibrary.innerHTML = '<div class="empty">생성된 영상이 없습니다</div>';
+          videoLibraryStatus.textContent = "0개";
+          return;
+        }
+        videoLibrary.innerHTML = videos.map((video) => `
+          <div class="video-card ${video.is_long_video ? "long-card" : ""}">
+            <video src="${escapeText(video.video_url)}?t=${Date.now()}" controls playsinline></video>
+            ${video.kind_label ? `<span class="video-kind">${escapeText(video.kind_label)}</span>` : ""}
+            <strong>${escapeText(videoLabel(video))}</strong>
+            <div class="subtle">${escapeText(formatDate(video.modified_at * 1000))} / ${formatBytes(video.size)}</div>
+            <div class="row-tools">
+              <a class="mini-button" href="${escapeText(video.video_url)}" target="_blank" rel="noreferrer">열기</a>
+              <button class="mini-button youtube-meta" type="button" data-filename="${escapeText(video.filename)}">유튜브 정보</button>
+              <button class="mini-button danger delete-video" type="button" data-filename="${escapeText(video.filename)}">삭제</button>
+            </div>
+          </div>
+        `).join("");
+        videoLibraryStatus.textContent = `최근 ${videos.length}개`;
+      } catch (error) {
+        videoLibraryStatus.textContent = "영상 목록을 불러오지 못했습니다";
+        console.error(error);
+      }
+    }
+
+    async function pollLongVideoJob(jobId) {
+      for (;;) {
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+        const response = await fetch(`/api/long-videos/jobs/${jobId}`);
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+        const job = payload.job;
+        longVideoStatus.textContent = `${job.stage || job.status} (${job.progress || 0}%)`;
+        if (job.status === "ready") {
+          longVideoStatus.innerHTML = `긴영상 생성 완료: <a href="${escapeText(job.video_url)}" target="_blank" rel="noreferrer">${escapeText(job.video_url)}</a>`;
+          await loadVideoLibrary();
+          return job;
+        }
+        if (job.status === "failed") {
+          throw new Error(job.error || "긴영상 생성 실패");
+        }
+      }
+    }
+
+    createLongVideo.addEventListener("click", async () => {
+      createLongVideo.disabled = true;
+      longVideoStatus.textContent = "긴영상 생성 요청 중";
+      try {
+        const response = await fetch("/api/long-videos/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ count: longVideoCount.value })
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+        await pollLongVideoJob(payload.job.id);
+      } catch (error) {
+        longVideoStatus.textContent = error.message || "긴영상 생성 실패";
+        console.error(error);
+      } finally {
+        createLongVideo.disabled = false;
+      }
+    });
+
+    videoLibrary.addEventListener("click", async (event) => {
+      const metadataButton = event.target.closest(".youtube-meta");
+      if (metadataButton) {
+        loadYoutubeMetadata(metadataButton.dataset.filename);
+        return;
+      }
+
+      const button = event.target.closest(".delete-video");
+      if (!button) return;
+      if (!confirm("이 영상을 삭제할까요?")) return;
+      button.disabled = true;
+      pageStatus.textContent = "삭제 중";
+      try {
+        const response = await fetch(`/api/videos/${encodeURIComponent(button.dataset.filename)}`, {
+          method: "DELETE"
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+        pageStatus.textContent = "삭제 완료";
+        await loadVideoLibrary();
+      } catch (error) {
+        pageStatus.textContent = error.message || "삭제 실패";
+        console.error(error);
+      } finally {
+        button.disabled = false;
+      }
+    });
+
+    async function loadYoutubeMetadata(filename) {
+      metadataStatus.textContent = "불러오는 중";
+      currentMetadataFilename = filename;
+      currentYoutubeUpload = null;
+      currentYoutubeConfig = null;
+      resetUploadConfirmation();
+      youtubeTitle.value = "";
+      youtubeDescription.value = "";
+      youtubeTags.value = "";
+      youtubePrivacy.value = "private";
+      youtubeSchedulePublish.checked = true;
+      youtubeState.innerHTML = "<strong>상태 확인 중</strong><span>인증과 업로드 이력을 확인합니다.</span>";
+      uploadYoutube.disabled = true;
+      openModal(metadataModal);
+      try {
+        const [response, configResponse, uploadResponse] = await Promise.all([
+          fetch(`/api/videos/${encodeURIComponent(filename)}/youtube`),
+          fetch("/api/youtube/status"),
+          fetch(`/api/videos/${encodeURIComponent(filename)}/youtube/upload`)
+        ]);
+        const payload = await response.json();
+        const configPayload = await configResponse.json();
+        const uploadPayload = await uploadResponse.json();
+        if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+        if (!configResponse.ok) throw new Error(configPayload.error || `HTTP ${configResponse.status}`);
+        if (!uploadResponse.ok) throw new Error(uploadPayload.error || `HTTP ${uploadResponse.status}`);
+        const metadata = payload.metadata;
+        youtubeTitle.value = metadata.title || "";
+        youtubeDescription.value = metadata.description || "";
+        youtubeTags.value = (metadata.tags || []).join(", ");
+        metadataStatus.textContent = metadata.filename || filename;
+        currentYoutubeConfig = configPayload;
+        currentYoutubeUpload = uploadPayload.upload;
+        renderYoutubeState();
+      } catch (error) {
+        metadataStatus.textContent = error.message || "유튜브 정보를 만들지 못했습니다";
+        console.error(error);
+      }
+    }
+
+    function resetUploadConfirmation() {
+      uploadArmed = false;
+      uploadConfirm.classList.remove("open");
+      uploadYoutube.textContent = uploadButtonDefaultText();
+    }
+
+    function renderYoutubeState() {
+      const tokenReady = currentYoutubeConfig && currentYoutubeConfig.token_exists;
+      const scopeReady = currentYoutubeConfig && currentYoutubeConfig.token_has_required_scopes;
+      const clientReady = currentYoutubeConfig && currentYoutubeConfig.client_secrets_exists;
+      const upload = currentYoutubeUpload;
+      const uploaded = upload && upload.status === "uploaded" && upload.youtube_url;
+
+      authYoutube.disabled = !clientReady;
+      uploadYoutube.disabled = !tokenReady || !scopeReady;
+      syncYoutube.disabled = !uploaded || !tokenReady || !scopeReady;
+      updateYoutube.disabled = !uploaded || !tokenReady || !scopeReady;
+      openYoutubeStudio.style.pointerEvents = uploaded ? "auto" : "none";
+      openYoutubeStudio.style.opacity = uploaded ? "1" : "0.5";
+      openYoutubeStudio.href = uploaded
+        ? `https://studio.youtube.com/video/${encodeURIComponent(upload.youtube_video_id)}/edit`
+        : "#";
+
+      if (!clientReady) {
+        youtubeState.innerHTML = "<strong>인증 파일 없음</strong><span>client_secret.json 파일을 먼저 확인하세요.</span>";
+        uploadYoutube.disabled = true;
+        return;
+      }
+
+      if (!tokenReady) {
+        youtubeState.innerHTML = "<strong>유튜브 인증 필요</strong><span>업로드 전에 유튜브 인증을 먼저 진행하세요.</span>";
+        uploadYoutube.disabled = true;
+        return;
+      }
+
+      if (!scopeReady) {
+        youtubeState.innerHTML = "<strong>유튜브 재인증 필요</strong><span>영상 수정 권한을 추가해야 합니다. 유튜브 인증을 다시 진행하세요.</span>";
+        uploadYoutube.disabled = true;
+        return;
+      }
+
+      if (uploaded) {
+        const scheduleText = upload.scheduled_publish_at ? `<br><span>예약 시간: ${escapeText(formatDate(upload.scheduled_publish_at))}</span>` : "";
+        youtubeState.innerHTML = `<strong>${upload.scheduled_publish_at ? "예약 업로드됨" : "이미 업로드됨"}</strong><a href="${escapeText(upload.youtube_url)}" target="_blank" rel="noreferrer">${escapeText(upload.youtube_url)}</a>${scheduleText}<br><a href="https://studio.youtube.com/video/${escapeText(upload.youtube_video_id)}/edit" target="_blank" rel="noreferrer">YouTube Studio에서 열기</a>`;
+        uploadYoutube.disabled = true;
+        return;
+      }
+
+      if (upload && upload.status === "uploading") {
+        youtubeState.innerHTML = "<strong>업로드 진행 중</strong><span>같은 파일의 중복 업로드를 막고 있습니다.</span>";
+        uploadYoutube.disabled = true;
+        return;
+      }
+
+      if (upload && upload.status === "failed") {
+        youtubeState.innerHTML = `<strong>이전 업로드 실패</strong><span>${escapeText(upload.error || "오류 내용을 확인할 수 없습니다.")}</span>`;
+        uploadYoutube.disabled = false;
+        return;
+      }
+
+      youtubeState.innerHTML = "<strong>업로드 가능</strong><span>버튼을 누르면 최종 확인 후 비디오를 업로드합니다.</span>";
+      uploadYoutube.disabled = false;
+    }
+
+    function applyYoutubeDetails(details) {
+      youtubeTitle.value = details.title || "";
+      youtubeDescription.value = details.description || "";
+      youtubeTags.value = (details.tags || []).join(", ");
+      youtubePrivacy.value = details.privacy_status || "private";
+      resetUploadConfirmation();
+    }
+
+    async function copyTextFrom(input, statusTextValue) {
+      const value = input.value || "";
+      if (!value) return;
+      await navigator.clipboard.writeText(value);
+      metadataStatus.textContent = statusTextValue;
+    }
+
+    async function pollYoutubeUpload(filename, onStatus) {
+      for (;;) {
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+        const response = await fetch(`/api/videos/${encodeURIComponent(filename)}/youtube/upload`);
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+        const upload = payload.upload;
+        if (onStatus) onStatus(upload);
+        if (!upload || upload.status === "failed" || upload.status === "uploaded") {
+          return upload;
+        }
+      }
+    }
+
+    copyYoutubeTitle.addEventListener("click", () => copyTextFrom(youtubeTitle, "제목 복사 완료"));
+    copyYoutubeDescription.addEventListener("click", () => copyTextFrom(youtubeDescription, "설명 복사 완료"));
+    copyYoutubeTags.addEventListener("click", () => copyTextFrom(youtubeTags, "태그 복사 완료"));
+    [youtubeTitle, youtubeDescription, youtubeTags, youtubePrivacy, youtubeSchedulePublish].forEach((field) => {
+      field.addEventListener("input", resetUploadConfirmation);
+      field.addEventListener("change", resetUploadConfirmation);
+    });
+    authYoutube.addEventListener("click", () => {
+      window.location.href = "/youtube/oauth/start";
+    });
+
+    syncYoutube.addEventListener("click", async () => {
+      if (!currentMetadataFilename) return;
+      syncYoutube.disabled = true;
+      metadataStatus.textContent = "YouTube 정보 불러오는 중";
+      try {
+        const response = await fetch(`/api/videos/${encodeURIComponent(currentMetadataFilename)}/youtube/remote`);
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+        currentYoutubeUpload = payload.upload;
+        applyYoutubeDetails(payload.details);
+        renderYoutubeState();
+        metadataStatus.textContent = "YouTube 정보 불러오기 완료";
+      } catch (error) {
+        metadataStatus.textContent = error.message || "YouTube 정보를 불러오지 못했습니다";
+        console.error(error);
+      } finally {
+        renderYoutubeState();
+      }
+    });
+
+    updateYoutube.addEventListener("click", async () => {
+      if (!currentMetadataFilename) return;
+      updateYoutube.disabled = true;
+      metadataStatus.textContent = "YouTube 수정 반영 중";
+      try {
+        const response = await fetch(`/api/videos/${encodeURIComponent(currentMetadataFilename)}/youtube/remote`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: youtubeTitle.value,
+            description: youtubeDescription.value,
+            tags: youtubeTags.value,
+            privacy_status: youtubePrivacy.value,
+            schedule_publish: youtubeSchedulePublish.checked
+          })
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+        currentYoutubeUpload = payload.upload;
+        applyYoutubeDetails(payload.details);
+        renderYoutubeState();
+        metadataStatus.textContent = "YouTube 수정 반영 완료";
+      } catch (error) {
+        metadataStatus.textContent = error.message || "YouTube 수정 실패";
+        console.error(error);
+      } finally {
+        renderYoutubeState();
+      }
+    });
+
+    uploadYoutube.addEventListener("click", async () => {
+      if (!currentMetadataFilename) {
+        metadataStatus.textContent = "먼저 영상 정보를 불러오세요";
+        return;
+      }
+      if (!uploadArmed) {
+        uploadArmed = true;
+        uploadConfirm.classList.add("open");
+        uploadYoutube.textContent = youtubeSchedulePublish.checked ? "확인 후 예약" : "확인 후 업로드";
+        metadataStatus.textContent = youtubeSchedulePublish.checked
+          ? "예약 업로드로 진행합니다. 제목, 설명, 예약 옵션을 확인한 뒤 한 번 더 누르세요"
+          : "제목, 설명, 공개 상태를 확인한 뒤 한 번 더 누르세요";
+        return;
+      }
+      uploadYoutube.disabled = true;
+      uploadYoutube.textContent = youtubeSchedulePublish.checked ? "예약 중..." : "업로드 중...";
+      metadataStatus.textContent = youtubeSchedulePublish.checked
+        ? "유튜브 예약 업로드 중입니다. 영상 크기에 따라 시간이 걸릴 수 있습니다."
+        : "유튜브 업로드 중입니다. 영상 크기에 따라 시간이 걸릴 수 있습니다.";
+      try {
+        const response = await fetch(`/api/videos/${encodeURIComponent(currentMetadataFilename)}/youtube/upload`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: youtubeTitle.value,
+            description: youtubeDescription.value,
+            tags: youtubeTags.value,
+            privacy_status: youtubePrivacy.value,
+            schedule_publish: youtubeSchedulePublish.checked
+          })
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+        let upload = payload.upload;
+        if (upload && upload.status === "uploading") {
+          upload = await pollYoutubeUpload(currentMetadataFilename, () => {
+            metadataStatus.textContent = youtubeSchedulePublish.checked
+              ? "유튜브 예약 업로드 진행 중입니다. 긴 영상은 몇 분 걸릴 수 있습니다."
+              : "유튜브 업로드 진행 중입니다. 긴 영상은 몇 분 걸릴 수 있습니다.";
+          });
+        }
+        if (upload && upload.status === "failed") {
+          throw new Error(upload.error || "업로드 실패");
+        }
+        currentYoutubeUpload = upload;
+        const prefix = payload.already_uploaded ? "이미 업로드됨" : (payload.scheduled_publish ? "예약 업로드 완료" : "업로드 완료");
+        metadataStatus.innerHTML = `${prefix}: <a href="${escapeText(upload.youtube_url)}" target="_blank" rel="noreferrer">${escapeText(upload.youtube_url)}</a>`;
+        if (payload.scheduled_publish && payload.scheduled_publish.kst) {
+          metadataStatus.innerHTML += `<br>예약 시간: ${escapeText(formatDate(payload.scheduled_publish.kst))}`;
+        }
+        renderYoutubeState();
+      } catch (error) {
+        metadataStatus.textContent = error.message || "업로드 실패";
+        console.error(error);
+      } finally {
+        resetUploadConfirmation();
+        renderYoutubeState();
+      }
+    });
+
+    function hideMetadataModal() {
+      closeModalElement(metadataModal);
+    }
+
+    closeMetadataModal.addEventListener("click", hideMetadataModal);
+    metadataModal.addEventListener("click", (event) => {
+      if (event.target === metadataModal) hideMetadataModal();
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") hideMetadataModal();
+    });
+    refreshVideoLibrary.addEventListener("click", loadVideoLibrary);
+    loadVideoLibrary();
+  </script>
+</body>
+</html>

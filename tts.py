@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import subprocess
 import sys
 from datetime import datetime
@@ -17,18 +18,37 @@ if VENDOR_DIR.exists():
 
 AUDIO_DIR = BASE_DIR / "outputs" / "audio"
 DEFAULT_VOICE = "ko-KR-HyunsuMultilingualNeural"
+RANDOM_VOICE = "random"
 DEFAULT_RATE = "-12%"
 PAGE_PAUSE_SECONDS = 0.8
 VOICE_OPTIONS = {
+    RANDOM_VOICE: "랜덤 한국어 음성",
     "ko-KR-HyunsuMultilingualNeural": "차분한 기본 음성",
     "ko-KR-InJoonNeural": "차분한 남성 음성",
     "ko-KR-SunHiNeural": "차분한 여성 음성",
+    "en-US-AvaMultilingualNeural": "Ava 멀티링구얼 여성",
+    "en-US-EmmaMultilingualNeural": "Emma 멀티링구얼 여성",
+    "en-US-BrianMultilingualNeural": "Brian 멀티링구얼 남성",
+    "fr-FR-VivienneMultilingualNeural": "Vivienne 멀티링구얼 여성",
+    "fr-FR-RemyMultilingualNeural": "Remy 멀티링구얼 남성",
+    "de-DE-SeraphinaMultilingualNeural": "Seraphina 멀티링구얼 여성",
+    "de-DE-FlorianMultilingualNeural": "Florian 멀티링구얼 남성",
 }
+RANDOM_KOREAN_VOICES = [
+    voice for voice in VOICE_OPTIONS
+    if voice != RANDOM_VOICE
+]
 RATE_OPTIONS = {
     "slow": "-18%",
     "normal": "-10%",
     "fast": "+0%",
 }
+
+
+def resolve_voice(voice: str | None) -> str:
+    if not voice or voice == RANDOM_VOICE:
+        return random.choice(RANDOM_KOREAN_VOICES)
+    return voice
 
 
 def ffprobe_duration(path: Path) -> float:
@@ -70,11 +90,11 @@ def synthesize_speech(
     rate: str = DEFAULT_RATE,
 ) -> tuple[float, str]:
     output.parent.mkdir(parents=True, exist_ok=True)
-    used_voice = voice
+    used_voice = resolve_voice(voice)
     try:
-        asyncio.run(_synthesize_edge(text, output, voice, rate))
+        asyncio.run(_synthesize_edge(text, output, used_voice, rate))
     except Exception:
-        if voice == DEFAULT_VOICE:
+        if used_voice == DEFAULT_VOICE:
             raise
         used_voice = DEFAULT_VOICE
         asyncio.run(_synthesize_edge(text, output, DEFAULT_VOICE, rate))
@@ -139,6 +159,7 @@ def create_narration_audio(
     voice: str = DEFAULT_VOICE,
     rate: str = DEFAULT_RATE,
 ) -> tuple[Path, list[float]]:
+    voice = resolve_voice(voice)
     job_dir = AUDIO_DIR / job_key
     job_dir.mkdir(parents=True, exist_ok=True)
     parts: list[Path] = []

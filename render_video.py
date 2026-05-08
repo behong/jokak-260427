@@ -19,8 +19,9 @@ from moviepy.video.io.VideoFileClip import VideoFileClip
 from PIL import Image, ImageDraw, ImageFont
 
 from backgrounds import get_background_asset_by_id, list_background_assets
-from db import BASE_DIR, DB_PATH, init_db
-from tts import DEFAULT_RATE, DEFAULT_VOICE, create_narration_audio
+from bgm import random_bgm_asset
+from db import BASE_DIR, DB_PATH, get_app_setting, init_db
+from tts import DEFAULT_RATE, DEFAULT_VOICE, create_narration_audio, resolve_voice
 from video_script import generate_video_script
 
 
@@ -30,11 +31,14 @@ WIDTH = 1080
 HEIGHT = 1920
 FPS = 24
 BACKGROUND_SEGMENT_SECONDS = 10
+BACKGROUND_POOL_LIMIT = 500
+RECENT_BACKGROUND_EXCLUDE_COUNT = 30
 BACKGROUND_FADE_SECONDS = 0.7
 RENDER_PRESET = os.getenv("VIDEO_RENDER_PRESET", "veryfast")
 RENDER_THREADS = int(os.getenv("VIDEO_RENDER_THREADS", "4"))
 RENDER_ENGINE = os.getenv("VIDEO_RENDER_ENGINE", "ffmpeg")
 ENABLE_TTS_DEFAULT = os.getenv("VIDEO_TTS_ENABLED", "1") != "0"
+SUPPORTED_SOURCES = {"글반장", "직접입력"}
 BACKGROUND = (246, 242, 233)
 TEXT = (40, 39, 36)
 MUTED = (112, 104, 94)
@@ -50,6 +54,17 @@ FOOTER_LINES = [
     "지혜로운 조각들 · 조용히 건네는 문장",
     "지혜로운 조각들 · 생각이 머무는 곳",
 ]
+
+
+def setting_bool(name: str, default: str = "1") -> bool:
+    return get_app_setting(name, os.getenv(name, default)).strip().lower() not in {"0", "false", "no", "off"}
+
+
+def setting_float(name: str, default: str) -> float:
+    try:
+        return float(get_app_setting(name, os.getenv(name, default)))
+    except (TypeError, ValueError):
+        return float(default)
 
 
 def font(path: str, size: int) -> ImageFont.FreeTypeFont:
@@ -319,8 +334,8 @@ def get_log_content(log_id: int) -> str:
     if row is None:
         raise RuntimeError(f"Log not found: {log_id}")
     source, content = row
-    if source != "글반장":
-        raise RuntimeError("Only 글반장 logs are supported for video rendering")
+    if source not in SUPPORTED_SOURCES:
+        raise RuntimeError(f"Unsupported source for video rendering: {source}")
     if not content.strip():
         raise RuntimeError("Selected log has empty content")
     return content
@@ -340,10 +355,11 @@ def prepared_background_clip(path: Path, duration: float):
 
 
 def ordered_background_assets(first_asset_id: int) -> list[dict[str, object]]:
-    assets = list_background_assets(limit=100)
+    assets = list_background_assets(limit=BACKGROUND_POOL_LIMIT, active_only=True)
     existing = [asset for asset in assets if (BASE_DIR / str(asset.get("local_path"))).exists()]
     selected = [asset for asset in existing if int(asset["id"]) == first_asset_id]
     others = [asset for asset in existing if int(asset["id"]) != first_asset_id]
+    random.shuffle(others)
     return selected + others if selected else others
 
 
@@ -398,6 +414,32 @@ def background_segment_paths(asset_id: int, duration: float) -> list[tuple[Path,
         remaining -= segment_duration
         index += 1
     return segments
+
+
+def random_background_asset_id() -> int | None:
+    assets = [
+        asset
+        for asset in list_background_assets(limit=BACKGROUND_POOL_LIMIT, active_only=True)
+        if (BASE_DIR / str(asset.get("local_path"))).exists()
+    ]
+    if not assets:
+        return None
+    recent_ids: set[int] = set()
+    init_db(DB_PATH)
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT background_asset_id
+            FROM video_jobs
+            WHERE background_asset_id IS NOT NULL
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (RECENT_BACKGROUND_EXCLUDE_COUNT,),
+        ).fetchall()
+    recent_ids = {int(row[0]) for row in rows if row[0] is not None}
+    candidates = [asset for asset in assets if int(asset["id"]) not in recent_ids]
+    return int(random.choice(candidates or assets)["id"])
 
 
 def run_ffmpeg_overlay_render(
@@ -522,6 +564,217 @@ def mux_audio(video_path: Path, audio_path: Path) -> None:
     temp_output.replace(video_path)
 
 
+def ffprobe_video_duration(video_path: Path) -> float:
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "quiet",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(video_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return float(result.stdout.strip() or 0)
+
+
+def ffprobe_video_size(video_path: Path) -> tuple[int, int]:
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "quiet",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "csv=p=0:s=x",
+            str(video_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    width, height = result.stdout.strip().split("x", 1)
+    return int(width), int(height)
+
+
+def ffprobe_has_audio(video_path: Path) -> bool:
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "quiet",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=index",
+            "-of",
+            "csv=p=0",
+            str(video_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return bool(result.stdout.strip())
+
+
+def mix_bgm(video_path: Path, bgm_path: Path) -> None:
+    duration = ffprobe_video_duration(video_path)
+    if duration <= 0:
+        return
+    has_audio = ffprobe_has_audio(video_path)
+    volume = setting_float("VIDEO_BGM_TTS_VOLUME", "0.10") if has_audio else setting_float("VIDEO_BGM_ONLY_VOLUME", "0.14")
+    fade_out_start = max(0.0, duration - 1.2)
+    temp_output = video_path.with_name(f"{video_path.stem}-bgm{video_path.suffix}")
+    bgm_filter = (
+        f"[1:a]atrim=0:{duration:.3f},asetpts=PTS-STARTPTS,"
+        f"volume={volume:.3f},"
+        "afade=t=in:st=0:d=1.0,"
+        f"afade=t=out:st={fade_out_start:.3f}:d=1.2[bgm]"
+    )
+    if has_audio:
+        filter_complex = (
+            "[0:a:0]volume=1.0[main];"
+            f"{bgm_filter};"
+            "[main][bgm]amix=inputs=2:duration=first:dropout_transition=0[a]"
+        )
+    else:
+        filter_complex = f"{bgm_filter};[bgm]anull[a]"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(video_path),
+            "-stream_loop",
+            "-1",
+            "-i",
+            str(bgm_path),
+            "-filter_complex",
+            filter_complex,
+            "-map",
+            "0:v:0",
+            "-map",
+            "[a]",
+            "-c:v",
+            "copy",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "160k",
+            "-shortest",
+            str(temp_output),
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    temp_output.replace(video_path)
+
+
+def _escape_drawtext_text(text: str) -> str:
+    return (
+        text.replace("\\", "\\\\")
+        .replace(":", "\\:")
+        .replace("'", "\\'")
+        .replace("%", "\\%")
+    )
+
+
+def add_cta_subtitle(video_path: Path) -> None:
+    width, height = ffprobe_video_size(video_path)
+    has_audio = ffprobe_has_audio(video_path)
+    temp_output = video_path.with_name(f"{video_path.stem}-cta{video_path.suffix}")
+    font_file = "C\\:/Windows/Fonts/malgun.ttf"
+    cta_text = random.choice(
+        [
+            "이 문장이 오늘 필요하셨나요? 댓글로 알려주세요",
+            "저장하고 싶은 문장이었나요?",
+            "공감되셨다면 구독 부탁드려요",
+        ]
+    )
+    text = _escape_drawtext_text(cta_text)
+    cta_filter = (
+        f"drawtext=fontfile='{font_file}':text='{text}':"
+        "fontsize=42:fontcolor=white:borderw=4:bordercolor=black:"
+        "x=(w-text_w)/2:y=(h-text_h)/2"
+    )
+    command = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(video_path),
+        "-f",
+        "lavfi",
+        "-t",
+        "3",
+        "-i",
+        f"color=c=black:s={width}x{height}:r={FPS}",
+    ]
+    if has_audio:
+        command.extend(
+            [
+                "-f",
+                "lavfi",
+                "-t",
+                "3",
+                "-i",
+                "anullsrc=channel_layout=stereo:sample_rate=44100",
+                "-filter_complex",
+                (
+                    "[0:v]setsar=1[v0];"
+                    f"[1:v]{cta_filter},setsar=1[v1];"
+                    "[v0][0:a:0][v1][2:a:0]concat=n=2:v=1:a=1[v][a]"
+                ),
+                "-map",
+                "[v]",
+                "-map",
+                "[a]",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "160k",
+            ]
+        )
+    else:
+        command.extend(
+            [
+                "-filter_complex",
+                (
+                    "[0:v]setsar=1[v0];"
+                    f"[1:v]{cta_filter},setsar=1[v1];"
+                    "[v0][v1]concat=n=2:v=1:a=0[v]"
+                ),
+                "-map",
+                "[v]",
+                "-an",
+            ]
+        )
+    command.extend(
+        [
+            "-c:v",
+            "libx264",
+            "-preset",
+            RENDER_PRESET,
+            "-threads",
+            str(RENDER_THREADS),
+            "-pix_fmt",
+            "yuv420p",
+            str(temp_output),
+        ]
+    )
+    subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    temp_output.replace(video_path)
+
+
 def render_video(
     log_id: int,
     background_asset_id: int | None = None,
@@ -536,6 +789,9 @@ def render_video(
 
     content = get_log_content(log_id)
     script = generate_video_script(content)
+    if background_asset_id is None:
+        background_asset_id = random_background_asset_id()
+    bgm_asset = random_bgm_asset() if setting_bool("VIDEO_BGM_ENABLED", "1") else None
     pages = list(script["pages"])
     if script["outro_page"]:
         pages.append(script["outro_page"])
@@ -550,6 +806,7 @@ def render_video(
     durations: list[float] = []
     narration_path: Path | None = None
     if tts_enabled:
+        tts_voice = resolve_voice(tts_voice)
         progress("TTS 생성 중", 15)
         narration_path, tts_durations = create_narration_audio(
             pages,
@@ -636,6 +893,15 @@ def render_video(
     if narration_path:
         progress("오디오 합성 중", 85)
         mux_audio(output, narration_path)
+    progress("댓글 자막 추가 중", 92)
+    add_cta_subtitle(output)
+    if bgm_asset:
+        progress("BGM 합성 중", 96)
+        bgm_path = BASE_DIR / str(bgm_asset["local_path"])
+        mix_bgm(output, bgm_path)
+        script["bgm_asset_id"] = int(bgm_asset["id"])
+        script["bgm_path"] = bgm_path.resolve().relative_to(BASE_DIR).as_posix()
+        script["bgm_title"] = str(bgm_asset.get("title") or bgm_path.stem)
     progress("완료", 100)
     return output, script
 

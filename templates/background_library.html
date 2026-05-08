@@ -1,0 +1,586 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>배경영상</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f6f8;
+      --panel: #ffffff;
+      --text: #17202a;
+      --muted: #667085;
+      --line: #d7dde5;
+      --accent: #1769aa;
+      --accent-soft: #e7f0f8;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      font-size: 14px;
+    }
+
+    body.modal-open {
+      overflow: hidden;
+      position: fixed;
+      width: 100%;
+    }
+
+    header {
+      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+      padding: 18px 24px;
+    }
+
+    .header-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: start;
+    }
+
+    h1 {
+      margin: 0 0 4px;
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin: 0;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+
+    .subtle {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .top-menu,
+    .row-tools {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .top-menu { margin-top: 14px; }
+
+    .top-menu a,
+    .mini-button,
+    button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 0 12px;
+      color: var(--text);
+      background: #fff;
+      text-decoration: none;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .top-menu a.active,
+    button.primary {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: var(--accent-soft);
+    }
+
+    main {
+      width: min(1280px, 100%);
+      margin: 0 auto;
+      padding: 20px 24px 32px;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      margin-bottom: 16px;
+    }
+
+    .section-title {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .toolbar {
+      display: grid;
+      grid-template-columns: minmax(180px, 1fr) auto auto;
+      gap: 8px;
+      align-items: end;
+      margin-bottom: 12px;
+    }
+
+    select,
+    input {
+      width: 100%;
+      height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      color: var(--text);
+      background: #fff;
+      padding: 0 10px;
+      font: inherit;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    .stat {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fff;
+    }
+
+    .stat label {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 6px;
+    }
+
+    .stat strong {
+      font-size: 22px;
+    }
+
+    .asset-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+      gap: 10px;
+    }
+
+    .asset-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px;
+      background: #fff;
+    }
+
+    .asset-card.active {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px var(--accent-soft);
+    }
+
+    .asset-card img {
+      width: 100%;
+      aspect-ratio: 9 / 14;
+      object-fit: cover;
+      border-radius: 6px;
+      background: #f9fafb;
+    }
+
+    .asset-card strong {
+      display: block;
+      margin-top: 7px;
+      font-size: 13px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .asset-card .subtle {
+      min-height: 38px;
+      margin: 4px 0 8px;
+      line-height: 1.45;
+    }
+
+    .badge {
+      display: inline-block;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      padding: 3px 9px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .empty {
+      padding: 24px;
+      text-align: center;
+      color: var(--muted);
+      grid-column: 1 / -1;
+    }
+
+    .modal {
+      position: fixed;
+      inset: 0;
+      z-index: 20;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: rgba(13, 18, 28, 0.82);
+      padding: 24px;
+    }
+
+    .modal.open { display: flex; }
+
+    #closePreview {
+      position: fixed;
+      top: 18px;
+      right: 18px;
+      width: 42px;
+      height: 42px;
+      border-radius: 50%;
+      font-size: 24px;
+      color: #fff;
+      border-color: rgba(255,255,255,0.45);
+      background: rgba(0,0,0,0.25);
+    }
+
+    .preview-panel {
+      width: min(420px, 92vw);
+      max-height: 88vh;
+      background: #111;
+      border-radius: 8px;
+      padding: 12px;
+    }
+
+    .preview-panel video {
+      width: 100%;
+      max-height: 78vh;
+      border-radius: 6px;
+      background: #000;
+    }
+
+    @media (max-width: 820px) {
+      header { padding: 16px; }
+      main { padding: 16px; }
+      .header-row,
+      .section-title { flex-direction: column; }
+      .stats,
+      .toolbar { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-row">
+      <div>
+        <h1>배경영상</h1>
+        <div class="subtle">분기별 사용 영상은 활성 500개까지만 관리합니다.</div>
+      </div>
+      {% if auth_enabled %}
+      <form method="post" action="/logout">
+        <button type="submit">로그아웃</button>
+      </form>
+      {% endif %}
+    </div>
+    <nav class="top-menu" aria-label="상단 메뉴">
+      <a href="/">대시보드</a>
+      <a href="/manual">수동 좋은글</a>
+      <a href="/generated-videos">생성영상</a>
+      <a class="active" href="/background-library">배경영상</a>
+      <a href="/settings">운영 설정</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="panel" aria-label="분기별 배경 관리">
+      <div class="section-title">
+        <div>
+          <h2>분기별 사용 영상</h2>
+          <div class="subtle" id="pageStatus">불러오는 중</div>
+        </div>
+        <div class="row-tools">
+          <button type="button" id="refreshAll">새로고침</button>
+        </div>
+      </div>
+
+      <div class="stats">
+        <div class="stat">
+          <label>활성 영상</label>
+          <strong id="activeCount">0</strong>
+        </div>
+        <div class="stat">
+          <label>전체 보관</label>
+          <strong id="totalCount">0</strong>
+        </div>
+        <div class="stat">
+          <label>현재 분기</label>
+          <strong id="activeCollection">-</strong>
+        </div>
+      </div>
+
+      <div class="toolbar">
+        <select id="collectionSelect"></select>
+        <button class="primary" type="button" id="activateCollection">분기 활성화</button>
+        <button type="button" id="showActive">활성 500개 보기</button>
+      </div>
+
+      <div class="toolbar">
+        <input id="searchQuery" type="search" value="calm library" placeholder="Pexels 검색어">
+        <button type="button" id="searchBackgrounds">검색</button>
+        <button type="button" id="showLibrary">전체 보관함</button>
+      </div>
+
+      <div class="asset-grid" id="assetGrid">
+        <div class="empty">불러오는 중</div>
+      </div>
+    </section>
+  </main>
+
+  <div class="modal" id="previewModal" aria-hidden="true">
+    <button type="button" id="closePreview" aria-label="닫기">&times;</button>
+    <div class="preview-panel">
+      <video id="previewVideo" controls playsinline></video>
+    </div>
+  </div>
+
+  <script>
+    const pageStatus = document.querySelector("#pageStatus");
+    const activeCount = document.querySelector("#activeCount");
+    const totalCount = document.querySelector("#totalCount");
+    const activeCollection = document.querySelector("#activeCollection");
+    const collectionSelect = document.querySelector("#collectionSelect");
+    const activateCollection = document.querySelector("#activateCollection");
+    const showActive = document.querySelector("#showActive");
+    const showLibrary = document.querySelector("#showLibrary");
+    const refreshAll = document.querySelector("#refreshAll");
+    const searchQuery = document.querySelector("#searchQuery");
+    const searchBackgrounds = document.querySelector("#searchBackgrounds");
+    const assetGrid = document.querySelector("#assetGrid");
+    const previewModal = document.querySelector("#previewModal");
+    const previewVideo = document.querySelector("#previewVideo");
+    const closePreview = document.querySelector("#closePreview");
+    let searchResults = [];
+    let bodyScrollY = 0;
+
+    function escapeText(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function meta(item) {
+      const size = item.width && item.height ? `${item.width}x${item.height}` : "크기 미상";
+      const duration = item.duration ? `${Math.round(item.duration)}초` : "길이 미상";
+      const collection = item.collection ? ` / ${item.collection}` : "";
+      return `${size} / ${duration}${collection}`;
+    }
+
+    function openModal(modal) {
+      bodyScrollY = window.scrollY || document.documentElement.scrollTop || 0;
+      document.body.style.top = `-${bodyScrollY}px`;
+      document.body.classList.add("modal-open");
+      modal.classList.add("open");
+      modal.setAttribute("aria-hidden", "false");
+    }
+
+    function closeModal() {
+      previewModal.classList.remove("open");
+      previewModal.setAttribute("aria-hidden", "true");
+      previewVideo.pause();
+      previewVideo.removeAttribute("src");
+      previewVideo.load();
+      document.body.classList.remove("modal-open");
+      document.body.style.top = "";
+      window.scrollTo(0, bodyScrollY);
+    }
+
+    function renderAssets(assets) {
+      if (!assets.length) {
+        assetGrid.innerHTML = '<div class="empty">표시할 배경 영상이 없습니다</div>';
+        return;
+      }
+      assetGrid.innerHTML = assets.map((item) => {
+        const enabled = Number(item.enabled) === 1;
+        return `
+          <div class="asset-card ${enabled ? "active" : ""}">
+            <img src="${escapeText(item.preview_url || "")}" alt="">
+            <strong>${escapeText(item.author || item.provider || "background")}</strong>
+            <div class="subtle">${escapeText(meta(item))}</div>
+            <div class="row-tools">
+              <span class="badge">${enabled ? "사용" : "보관"}</span>
+              <button class="mini-button preview-background" type="button" data-url="${escapeText(item.video_url || "")}">보기</button>
+              <button class="mini-button collection-background" type="button" data-id="${escapeText(item.id)}" data-collection="${escapeText(item.collection || "")}">분류</button>
+            </div>
+          </div>
+        `;
+      }).join("");
+    }
+
+    function renderSearchResults(results) {
+      searchResults = results;
+      if (!results.length) {
+        assetGrid.innerHTML = '<div class="empty">검색 결과가 없습니다</div>';
+        return;
+      }
+      assetGrid.innerHTML = results.map((item, index) => `
+        <div class="asset-card">
+          <img src="${escapeText(item.preview_url || "")}" alt="">
+          <strong>${escapeText(item.author || "Pexels")}</strong>
+          <div class="subtle">${escapeText(meta(item))}</div>
+          <button class="mini-button download-background" type="button" data-index="${index}">다운로드</button>
+        </div>
+      `).join("");
+    }
+
+    async function loadCollections() {
+      const response = await fetch("/api/backgrounds/collections");
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+      const collections = payload.collections || [];
+      const visibleCollections = collections.filter((item) => item.collection);
+      collectionSelect.innerHTML = visibleCollections.map((item) => `
+        <option value="${escapeText(item.collection)}">
+          ${escapeText(item.collection)} (${item.active_count || 0}/${item.count})
+        </option>
+      `).join("");
+      const active = visibleCollections.find((item) => Number(item.active_count || 0) > 0);
+      activeCollection.textContent = active ? active.collection : "-";
+      totalCount.textContent = collections.reduce((sum, item) => sum + Number(item.count || 0), 0).toLocaleString();
+      activeCount.textContent = collections.reduce((sum, item) => sum + Number(item.active_count || 0), 0).toLocaleString();
+    }
+
+    async function loadAssets(activeOnly = true) {
+      pageStatus.textContent = activeOnly ? "활성 배경 불러오는 중" : "전체 보관함 불러오는 중";
+      const response = await fetch(`/api/backgrounds?limit=500&active_only=${activeOnly ? "1" : "0"}`);
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+      renderAssets(payload.backgrounds || []);
+      pageStatus.textContent = activeOnly ? "활성 500개 관리" : "전체 보관함";
+    }
+
+    async function refresh(activeOnly = true) {
+      await loadCollections();
+      await loadAssets(activeOnly);
+    }
+
+    refreshAll.addEventListener("click", () => refresh(true).catch(showError));
+    showActive.addEventListener("click", () => refresh(true).catch(showError));
+    showLibrary.addEventListener("click", () => refresh(false).catch(showError));
+
+    activateCollection.addEventListener("click", async () => {
+      const collection = collectionSelect.value;
+      if (!collection) {
+        pageStatus.textContent = "활성화할 분기를 선택하세요";
+        return;
+      }
+      activateCollection.disabled = true;
+      try {
+        const response = await fetch("/api/backgrounds/collections/activate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ collection })
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+        await refresh(true);
+        pageStatus.textContent = `${collection} 분기 영상 최대 ${payload.active_limit || 500}개를 사용합니다`;
+      } catch (error) {
+        showError(error);
+      } finally {
+        activateCollection.disabled = false;
+      }
+    });
+
+    searchBackgrounds.addEventListener("click", async () => {
+      const query = searchQuery.value.trim() || "calm library";
+      searchBackgrounds.disabled = true;
+      pageStatus.textContent = "Pexels 검색 중";
+      try {
+        const response = await fetch(`/api/backgrounds/search?q=${encodeURIComponent(query)}&per_page=12`);
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+        renderSearchResults(payload.results || []);
+        pageStatus.textContent = `검색 결과 ${(payload.results || []).length}개`;
+      } catch (error) {
+        showError(error);
+      } finally {
+        searchBackgrounds.disabled = false;
+      }
+    });
+
+    assetGrid.addEventListener("click", async (event) => {
+      const previewButton = event.target.closest(".preview-background");
+      const collectionButton = event.target.closest(".collection-background");
+      const downloadButton = event.target.closest(".download-background");
+      if (previewButton) {
+        previewVideo.src = previewButton.dataset.url;
+        openModal(previewModal);
+        return;
+      }
+      if (collectionButton) {
+        const value = window.prompt("분류", collectionButton.dataset.collection || "");
+        if (value === null) return;
+        collectionButton.disabled = true;
+        try {
+          const response = await fetch(`/api/backgrounds/${encodeURIComponent(collectionButton.dataset.id)}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ collection: value })
+          });
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+          await refresh(false);
+        } catch (error) {
+          showError(error);
+        } finally {
+          collectionButton.disabled = false;
+        }
+        return;
+      }
+      if (downloadButton) {
+        const item = searchResults[Number(downloadButton.dataset.index)];
+        if (!item) return;
+        downloadButton.disabled = true;
+        pageStatus.textContent = "배경 영상 다운로드 중";
+        try {
+          const response = await fetch("/api/backgrounds/download", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(item)
+          });
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+          pageStatus.textContent = "다운로드 완료. 분류를 지정한 뒤 분기를 활성화하세요";
+          await loadCollections();
+        } catch (error) {
+          showError(error);
+        } finally {
+          downloadButton.disabled = false;
+        }
+      }
+    });
+
+    closePreview.addEventListener("click", closeModal);
+    previewModal.addEventListener("click", (event) => {
+      if (event.target === previewModal) closeModal();
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && previewModal.classList.contains("open")) closeModal();
+    });
+
+    function showError(error) {
+      pageStatus.textContent = error.message || "작업 실패";
+      console.error(error);
+    }
+
+    refresh(true).catch(showError);
+  </script>
+</body>
+</html>

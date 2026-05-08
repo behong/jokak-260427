@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import logging
 import os
 import signal
@@ -7,19 +8,45 @@ from pathlib import Path
 from telethon import TelegramClient, events
 
 from channels import load_channels
-from db import DB_PATH, init_db, normalize_message, save_message
+from db import DB_PATH, apply_db_settings_to_env, get_app_setting, init_db, normalize_message, save_message
 
 BASE_DIR = Path(__file__).resolve().parent
-MEDIA_DIR = BASE_DIR / "static" / "media"
 SESSION_NAME = os.getenv("TELEGRAM_SESSION", str(BASE_DIR / "telegram_monitor"))
 
-CATCH_UP_LIMIT = int(os.getenv("TELEGRAM_CATCH_UP_LIMIT", "20"))
+DEFAULT_CATCH_UP_LIMIT = 20
+DEFAULT_CATCH_UP_INTERVAL_SECONDS = 3600
+
+
+def int_setting(name: str, default: int) -> int:
+    value = get_app_setting(name, os.getenv(name, str(default)))
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        logging.warning("Invalid integer setting %s=%r. Using %s", name, value, default)
+        return default
 
 def get_required_env(name: str) -> str:
-    value = os.getenv(name)
+    apply_db_settings_to_env()
+    value = get_app_setting(name, os.getenv(name, ""))
     if not value:
         raise RuntimeError(f"Missing required environment variable: {name}")
     return value
+
+
+def materialize_telegram_session_from_settings() -> None:
+    session_value = get_app_setting("TELEGRAM_SESSION", os.getenv("TELEGRAM_SESSION", str(BASE_DIR / "telegram_monitor")))
+    session_path = Path(session_value)
+    if not session_path.is_absolute():
+        session_path = BASE_DIR / session_path
+    if session_path.suffix != ".session":
+        session_path = session_path.with_suffix(".session")
+    if session_path.exists():
+        return
+    encoded = get_app_setting("TELEGRAM_SESSION_FILE_B64", "")
+    if not encoded:
+        return
+    session_path.parent.mkdir(parents=True, exist_ok=True)
+    session_path.write_bytes(base64.b64decode(encoded))
 
 
 async def main() -> None:
@@ -38,6 +65,7 @@ async def main() -> None:
     api_hash = get_required_env("TELEGRAM_API_HASH")
 
     init_db(DB_PATH)
+    materialize_telegram_session_from_settings()
     target_chats = load_channels()
 
     client = TelegramClient(
@@ -61,29 +89,11 @@ async def main() -> None:
         except NotImplementedError:
             signal.signal(sig, lambda *_: request_shutdown())
 
-    async def download_image(message) -> tuple[str | None, str | None]:
-        if not message.media:
-            return None, None
-
-        mime_type = getattr(message.file, "mime_type", None)
-        is_image = bool(message.photo) or bool(mime_type and mime_type.startswith("image/"))
-        if not is_image:
-            return None, None
-
-        MEDIA_DIR.mkdir(parents=True, exist_ok=True)
-        path = await message.download_media(file=MEDIA_DIR)
-        if not path:
-            return None, None
-
-        relative_path = Path(path).resolve().relative_to(BASE_DIR).as_posix()
-        return relative_path, "image"
-
     async def save_incoming_message(chat_id: int | None, message) -> str:
         msg_id = message.id
-        media_path, media_kind = await download_image(message)
         text = message.raw_text
         content = normalize_message(text)
-        if not content and not media_path:
+        if not content:
             return "skipped"
 
         source = target_chats.get(chat_id, str(chat_id))
@@ -98,18 +108,15 @@ async def main() -> None:
             msg_id,
             content,
             message.date,
-            media_path=media_path,
-            media_kind=media_kind,
             group_key=group_key,
         )
 
         if result in {"inserted", "updated"}:
             logging.info(
-                "Saved message source=%s chat_id=%s msg_id=%s media=%s result=%s",
+                "Saved message source=%s chat_id=%s msg_id=%s result=%s",
                 source,
                 chat_id,
                 msg_id,
-                media_path or "-",
                 result,
             )
         else:
@@ -117,11 +124,16 @@ async def main() -> None:
         return result
 
     async def catch_up_recent_messages() -> None:
+        catch_up_limit = int_setting("TELEGRAM_CATCH_UP_LIMIT", DEFAULT_CATCH_UP_LIMIT)
+        if catch_up_limit <= 0:
+            logging.info("Catch-up skipped because TELEGRAM_CATCH_UP_LIMIT=%s", catch_up_limit)
+            return
+
         total = 0
         for chat_id, source in target_chats.items():
             count = 0
             try:
-                async for message in client.iter_messages(chat_id, limit=CATCH_UP_LIMIT):
+                async for message in client.iter_messages(chat_id, limit=catch_up_limit):
                     if await save_incoming_message(chat_id, message) in {"inserted", "updated"}:
                         count += 1
             except Exception:
@@ -131,6 +143,26 @@ async def main() -> None:
             logging.info("Catch-up source=%s chat_id=%s saved=%s", source, chat_id, count)
         logging.info("Catch-up complete saved=%s", total)
 
+    async def catch_up_periodically() -> None:
+        while not stop_event.is_set():
+            interval = int_setting(
+                "TELEGRAM_CATCH_UP_INTERVAL_SECONDS",
+                DEFAULT_CATCH_UP_INTERVAL_SECONDS,
+            )
+            if interval <= 0:
+                logging.info(
+                    "Periodic catch-up disabled because TELEGRAM_CATCH_UP_INTERVAL_SECONDS=%s",
+                    interval,
+                )
+                return
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                logging.info("Periodic catch-up started")
+                await catch_up_recent_messages()
+            else:
+                return
+
     @client.on(events.NewMessage(chats=list(target_chats.keys())))
     async def handle_new_message(event: events.NewMessage.Event) -> None:
         await save_incoming_message(event.chat_id, event.message)
@@ -138,7 +170,12 @@ async def main() -> None:
     async with client:
         logging.info("Monitoring %s chats. DB=%s", len(target_chats), DB_PATH)
         await catch_up_recent_messages()
-        await stop_event.wait()
+        periodic_task = asyncio.create_task(catch_up_periodically())
+        try:
+            await stop_event.wait()
+        finally:
+            periodic_task.cancel()
+            await asyncio.gather(periodic_task, return_exceptions=True)
 
 
 if __name__ == "__main__":

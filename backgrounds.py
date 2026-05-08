@@ -10,11 +10,12 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-from db import BASE_DIR, DB_PATH, connect, init_db
+from db import BASE_DIR, DB_PATH, get_app_setting, connect, init_db
 
 
 BACKGROUND_DIR = BASE_DIR / "assets" / "backgrounds"
 PEXELS_VIDEO_SEARCH_URL = "https://api.pexels.com/videos/search"
+ACTIVE_BACKGROUND_LIMIT = 500
 
 
 class BackgroundAssetError(RuntimeError):
@@ -22,7 +23,7 @@ class BackgroundAssetError(RuntimeError):
 
 
 def pexels_api_key() -> str:
-    return os.getenv("PEXELS_API_KEY", "").strip()
+    return get_app_setting("PEXELS_API_KEY", os.getenv("PEXELS_API_KEY", "")).strip()
 
 
 def _request_json(url: str, headers: dict[str, str]) -> dict[str, Any]:
@@ -52,17 +53,18 @@ def _best_video_file(video: dict[str, Any]) -> dict[str, Any] | None:
         if int(item.get("height") or 0) >= int(item.get("width") or 0)
     ]
     candidates = portrait_files or files
-    return max(
+    return min(
         candidates,
         key=lambda item: (
-            int(item.get("height") or 0),
-            int(item.get("width") or 0),
-            1 if item.get("quality") in {"uhd", "hd"} else 0,
+            abs(int(item.get("height") or 0) - 1920),
+            0 if int(item.get("height") or 0) >= 1080 else 1,
+            0 if item.get("quality") in {"hd", "uhd"} else 1,
+            abs(int(item.get("width") or 0) - 1080),
         ),
     )
 
 
-def search_pexels_videos(query: str, per_page: int = 8) -> list[dict[str, Any]]:
+def search_pexels_videos(query: str, per_page: int = 8, page: int = 1) -> list[dict[str, Any]]:
     api_key = pexels_api_key()
     if not api_key:
         raise BackgroundAssetError(".env에 PEXELS_API_KEY를 추가해야 검색할 수 있습니다.")
@@ -73,6 +75,7 @@ def search_pexels_videos(query: str, per_page: int = 8) -> list[dict[str, Any]]:
             "query": clean_query,
             "orientation": "portrait",
             "per_page": max(1, min(int(per_page), 20)),
+            "page": max(1, int(page)),
         }
     )
     payload = _request_json(
@@ -179,7 +182,7 @@ def get_background_asset(provider: str, provider_id: str) -> dict[str, Any] | No
         row = conn.execute(
             """
             SELECT id, provider, provider_id, query, author, source_url, preview_url,
-                   local_path, width, height, duration, created_at
+                   local_path, width, height, duration, enabled, collection, created_at
             FROM background_assets
             WHERE provider = ? AND provider_id = ?
             """,
@@ -194,7 +197,7 @@ def get_background_asset_by_id(asset_id: int) -> dict[str, Any] | None:
         row = conn.execute(
             """
             SELECT id, provider, provider_id, query, author, source_url, preview_url,
-                   local_path, width, height, duration, created_at
+                   local_path, width, height, duration, enabled, collection, created_at
             FROM background_assets
             WHERE id = ?
             """,
@@ -203,23 +206,107 @@ def get_background_asset_by_id(asset_id: int) -> dict[str, Any] | None:
     return _asset_payload(dict(row)) if row else None
 
 
-def list_background_assets(limit: int = 50) -> list[dict[str, Any]]:
+def list_background_assets(limit: int = 50, active_only: bool = False) -> list[dict[str, Any]]:
+    init_db(DB_PATH)
+    where = "WHERE enabled = 1" if active_only else ""
+    with closing(connect(DB_PATH)) as conn:
+        rows = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT id, provider, provider_id, query, author, source_url, preview_url,
+                       local_path, width, height, duration, enabled, collection, created_at
+                FROM background_assets
+                {where}
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (max(1, min(int(limit), ACTIVE_BACKGROUND_LIMIT)),),
+            )
+        ]
+    return [_asset_payload(row) for row in rows]
+
+
+def update_background_asset(
+    asset_id: int,
+    enabled: bool | None = None,
+    collection: str | None = None,
+) -> dict[str, Any] | None:
+    init_db(DB_PATH)
+    updates: list[str] = []
+    params: list[Any] = []
+    if enabled is not None:
+        updates.append("enabled = ?")
+        params.append(1 if enabled else 0)
+    if collection is not None:
+        updates.append("collection = ?")
+        params.append(collection.strip()[:80] or None)
+    if updates:
+        params.append(asset_id)
+        with closing(connect(DB_PATH)) as conn:
+            conn.execute(
+                f"UPDATE background_assets SET {', '.join(updates)} WHERE id = ?",
+                params,
+            )
+            conn.commit()
+    return get_background_asset_by_id(asset_id)
+
+
+def list_background_collections() -> list[dict[str, Any]]:
     init_db(DB_PATH)
     with closing(connect(DB_PATH)) as conn:
         rows = [
             dict(row)
             for row in conn.execute(
                 """
-                SELECT id, provider, provider_id, query, author, source_url, preview_url,
-                       local_path, width, height, duration, created_at
+                SELECT COALESCE(collection, '') AS collection,
+                       COUNT(*) AS count,
+                       SUM(enabled) AS active_count
                 FROM background_assets
-                ORDER BY id DESC
-                LIMIT ?
-                """,
-                (max(1, min(int(limit), 200)),),
+                GROUP BY COALESCE(collection, '')
+                ORDER BY collection
+                """
             )
         ]
-    return [_asset_payload(row) for row in rows]
+    return rows
+
+
+def activate_background_collection(collection: str) -> dict[str, Any]:
+    clean_collection = collection.strip()[:80]
+    if not clean_collection:
+        raise BackgroundAssetError("활성화할 분류를 선택하세요.")
+    init_db(DB_PATH)
+    with closing(connect(DB_PATH)) as conn:
+        conn.execute("UPDATE background_assets SET enabled = 0")
+        conn.execute(
+            """
+            UPDATE background_assets
+            SET enabled = 1
+            WHERE id IN (
+                SELECT id
+                FROM background_assets
+                WHERE collection = ?
+                  AND COALESCE(height, 0) >= 1080
+                  AND COALESCE(duration, 0) >= 6
+                ORDER BY id DESC
+                LIMIT ?
+            )
+            """,
+            (clean_collection, ACTIVE_BACKGROUND_LIMIT),
+        )
+        conn.commit()
+    return {
+        "collection": clean_collection,
+        "active_limit": ACTIVE_BACKGROUND_LIMIT,
+        "collections": list_background_collections(),
+    }
+
+
+def count_background_assets() -> int:
+    init_db(DB_PATH)
+    with closing(connect(DB_PATH)) as conn:
+        row = conn.execute("SELECT COUNT(*) AS count FROM background_assets").fetchone()
+    return int(row["count"] if row else 0)
 
 
 def _asset_payload(row: dict[str, Any]) -> dict[str, Any]:

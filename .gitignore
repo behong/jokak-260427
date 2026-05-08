@@ -8,6 +8,7 @@ youtube_token.json
 telegram_logs.sqlite3
 telegram_logs.sqlite3-*
 monitor.log
+auto-publish.log
 logs/
 backups/
 static/media/
