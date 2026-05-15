@@ -11,7 +11,7 @@ while ($true) {
     $startedAt = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     Add-Content -LiteralPath $OutLog -Encoding UTF8 -Value "[$startedAt] starting dashboard.py"
 
-    & python ".\dashboard.py" *>> $OutLog
+    & cmd.exe /c "python `".\dashboard.py`" >> `"$OutLog`" 2>&1"
 
     $stoppedAt = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     Add-Content -LiteralPath $OutLog -Encoding UTF8 -Value "[$stoppedAt] dashboard.py stopped. restarting in 5 seconds"

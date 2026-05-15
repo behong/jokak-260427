@@ -11,7 +11,7 @@ while ($true) {
     $startedAt = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     Add-Content -LiteralPath $OutLog -Encoding UTF8 -Value "[$startedAt] starting monitor.py"
 
-    & python ".\monitor.py" *>> $OutLog
+    & cmd.exe /c "python `".\monitor.py`" >> `"$OutLog`" 2>&1"
 
     $stoppedAt = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     Add-Content -LiteralPath $OutLog -Encoding UTF8 -Value "[$stoppedAt] monitor.py stopped. restarting in 5 seconds"

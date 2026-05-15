@@ -38,7 +38,7 @@ RENDER_PRESET = os.getenv("VIDEO_RENDER_PRESET", "veryfast")
 RENDER_THREADS = int(os.getenv("VIDEO_RENDER_THREADS", "4"))
 RENDER_ENGINE = os.getenv("VIDEO_RENDER_ENGINE", "ffmpeg")
 ENABLE_TTS_DEFAULT = os.getenv("VIDEO_TTS_ENABLED", "1") != "0"
-SUPPORTED_SOURCES = {"글반장", "직접입력"}
+SUPPORTED_SOURCES = {"글반장", "직접입력", "사람로"}
 BACKGROUND = (246, 242, 233)
 TEXT = (40, 39, 36)
 MUTED = (112, 104, 94)

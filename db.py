@@ -109,6 +109,21 @@ CREATE TABLE IF NOT EXISTS youtube_uploads (
 )
 """
 
+CREATE_AUTO_UPLOAD_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS auto_upload_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    log_id INTEGER NOT NULL UNIQUE,
+    status TEXT NOT NULL,
+    video_job_id INTEGER,
+    youtube_upload_id INTEGER,
+    output_path TEXT,
+    error TEXT,
+    scheduled_publish_at TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+"""
+
 CREATE_LONG_VIDEO_JOB_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS long_video_jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -158,6 +173,20 @@ DEFAULT_SETTING_KEYS = {
     "YOUTUBE_TOKEN_JSON": True,
     "TELEGRAM_SESSION_FILE_B64": True,
     "YOUTUBE_STATS_INTERVAL_SECONDS": False,
+    "AUTO_UPLOAD_ENABLED": False,
+    "AUTO_UPLOAD_SOURCE": False,
+    "AUTO_UPLOAD_POLL_INTERVAL_SECONDS": False,
+    "AUTO_UPLOAD_MAX_PER_RUN": False,
+    "AUTO_UPLOAD_DAILY_LIMIT": False,
+    "AUTO_UPLOAD_PRIVACY_STATUS": False,
+    "AUTO_UPLOAD_SCHEDULE_WINDOWS": False,
+    "AUTO_UPLOAD_MIN_LEAD_MINUTES": False,
+    "AUTO_UPLOAD_MIN_CONTENT_LENGTH": False,
+    "AUTO_UPLOAD_INCLUDE_EXISTING": False,
+    "AUTO_UPLOAD_RETRY_FAILED": False,
+    "SARAMRO_QUOTES_ENABLED": False,
+    "SARAMRO_QUOTES_IMPORT_LIMIT": False,
+    "SARAMRO_QUOTES_MAX_PAGES": False,
     "VIDEO_BGM_ENABLED": False,
     "VIDEO_BGM_TTS_VOLUME": False,
     "VIDEO_BGM_ONLY_VOLUME": False,
@@ -261,6 +290,7 @@ def init_db(db_path: Path = DB_PATH) -> None:
         conn.execute(CREATE_BACKGROUND_TABLE_SQL)
         conn.execute(CREATE_BGM_TABLE_SQL)
         conn.execute(CREATE_YOUTUBE_UPLOAD_TABLE_SQL)
+        conn.execute(CREATE_AUTO_UPLOAD_TABLE_SQL)
         conn.execute(CREATE_LONG_VIDEO_JOB_TABLE_SQL)
         conn.execute(CREATE_APP_STATE_TABLE_SQL)
         conn.execute(CREATE_APP_SETTINGS_TABLE_SQL)
@@ -303,6 +333,12 @@ def init_db(db_path: Path = DB_PATH) -> None:
             conn.execute("ALTER TABLE youtube_uploads ADD COLUMN stats_checked_at TIMESTAMP")
         if "scheduled_publish_at" not in youtube_upload_columns:
             conn.execute("ALTER TABLE youtube_uploads ADD COLUMN scheduled_publish_at TEXT")
+        auto_upload_columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(auto_upload_jobs)").fetchall()
+        }
+        if "scheduled_publish_at" not in auto_upload_columns:
+            conn.execute("ALTER TABLE auto_upload_jobs ADD COLUMN scheduled_publish_at TEXT")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_telegram_logs_source "
             "ON telegram_logs(source)"
@@ -334,6 +370,10 @@ def init_db(db_path: Path = DB_PATH) -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_youtube_uploads_filename "
             "ON youtube_uploads(filename)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_auto_upload_jobs_status "
+            "ON auto_upload_jobs(status, id)"
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_long_video_jobs_status "

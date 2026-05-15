@@ -140,6 +140,63 @@
       line-height: 1.1;
     }
 
+    .operation-panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      margin-bottom: 16px;
+    }
+
+    .operation-grid {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .operation-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 11px 12px;
+      min-height: 104px;
+    }
+
+    .operation-card label {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 7px;
+    }
+
+    .operation-card strong {
+      display: block;
+      font-size: 16px;
+      margin-bottom: 5px;
+    }
+
+    .operation-pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      border-radius: 999px;
+      padding: 2px 9px;
+      font-size: 12px;
+      font-weight: 800;
+      background: #eef8f1;
+      color: var(--ok);
+    }
+
+    .operation-pill.warn {
+      background: #fff8e6;
+      color: #a15c07;
+    }
+
+    .operation-pill.bad {
+      background: #fdecec;
+      color: var(--danger);
+    }
+
     .toolbar {
       display: grid;
       grid-template-columns: minmax(180px, 1fr) 145px 145px 110px auto auto;
@@ -611,6 +668,21 @@
       flex-wrap: wrap;
     }
 
+    .quick-settings {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      margin-bottom: 16px;
+    }
+
+    .quick-settings-grid {
+      display: grid;
+      grid-template-columns: 170px minmax(130px, 1fr) minmax(130px, 1fr) auto;
+      gap: 10px;
+      align-items: end;
+    }
+
     .notice {
       color: var(--muted);
       font-size: 12px;
@@ -633,8 +705,10 @@
       main { padding: 16px; }
       .header-row { align-items: stretch; flex-direction: column; }
       .stats { grid-template-columns: 1fr; }
+      .operation-grid { grid-template-columns: 1fr; }
       .toolbar { grid-template-columns: 1fr; }
       .settings-grid { grid-template-columns: 1fr; }
+      .quick-settings-grid { grid-template-columns: 1fr; }
       .table-wrap { overflow-x: auto; }
       table { min-width: 900px; }
     }
@@ -678,6 +752,43 @@
       </div>
     </section>
 
+    <section class="operation-panel" aria-label="자동화 상태">
+      <div class="section-title">
+        <div>
+          <h2>자동화 상태</h2>
+          <div class="subtle" id="operationCheckedAt">확인 중</div>
+        </div>
+        <span class="operation-pill" id="operationOverall">확인 중</span>
+      </div>
+      <div class="operation-grid">
+        <div class="operation-card">
+          <label>수집기</label>
+          <strong id="monitorState">-</strong>
+          <div class="subtle" id="monitorDetail">-</div>
+        </div>
+        <div class="operation-card">
+          <label>최근 수집</label>
+          <strong id="collectionState">-</strong>
+          <div class="subtle" id="collectionDetail">-</div>
+        </div>
+        <div class="operation-card">
+          <label>영상 생성</label>
+          <strong id="generationState">-</strong>
+          <div class="subtle" id="generationDetail">-</div>
+        </div>
+        <div class="operation-card">
+          <label>자동 업로드</label>
+          <strong id="autoUploadState">-</strong>
+          <div class="subtle" id="autoUploadDetail">-</div>
+        </div>
+        <div class="operation-card">
+          <label>YouTube</label>
+          <strong id="youtubeStateSummary">-</strong>
+          <div class="subtle" id="youtubeDetailSummary">-</div>
+        </div>
+      </div>
+    </section>
+
     <section class="manual-entry dashboard-inline-manual" hidden aria-label="수동 좋은글 입력">
       <div class="section-title">
         <div>
@@ -716,6 +827,30 @@
       <button class="secondary" type="button" id="portableBackup">포터블 백업</button>
     </div>
     <div class="notice" id="backupStatus"></div>
+
+    <section class="quick-settings" aria-label="BGM 설정">
+      <div class="section-title">
+        <div>
+          <h2>BGM</h2>
+          <div class="subtle" id="bgmStatus">assets/bgm 폴더의 음원을 자동으로 섞습니다</div>
+        </div>
+      </div>
+      <div class="quick-settings-grid">
+        <label class="check-field">
+          <input id="quickBgmEnabled" type="checkbox">
+          자동 삽입
+        </label>
+        <div class="field">
+          <label for="quickBgmTtsVolume">TTS 볼륨</label>
+          <input id="quickBgmTtsVolume" type="number" min="0" max="1" step="0.01">
+        </div>
+        <div class="field">
+          <label for="quickBgmOnlyVolume">무음 볼륨</label>
+          <input id="quickBgmOnlyVolume" type="number" min="0" max="1" step="0.01">
+        </div>
+        <button type="button" id="saveBgmSettings">저장</button>
+      </div>
+    </section>
 
     <section class="manual-entry dashboard-inline-settings" hidden aria-label="운영 설정">
       <div class="section-title">
@@ -894,6 +1029,11 @@
     const cleanupBackups = document.querySelector("#cleanupBackups");
     const portableBackup = document.querySelector("#portableBackup");
     const backupStatus = document.querySelector("#backupStatus");
+    const bgmStatus = document.querySelector("#bgmStatus");
+    const quickBgmEnabled = document.querySelector("#quickBgmEnabled");
+    const quickBgmTtsVolume = document.querySelector("#quickBgmTtsVolume");
+    const quickBgmOnlyVolume = document.querySelector("#quickBgmOnlyVolume");
+    const saveBgmSettings = document.querySelector("#saveBgmSettings");
     const reloadSettings = document.querySelector("#reloadSettings");
     const saveSettings = document.querySelector("#saveSettings");
     const settingsStatus = document.querySelector("#settingsStatus");
@@ -910,6 +1050,18 @@
     const totalCount = document.querySelector("#totalCount");
     const latestAt = document.querySelector("#latestAt");
     const sourceCounts = document.querySelector("#sourceCounts");
+    const operationCheckedAt = document.querySelector("#operationCheckedAt");
+    const operationOverall = document.querySelector("#operationOverall");
+    const monitorState = document.querySelector("#monitorState");
+    const monitorDetail = document.querySelector("#monitorDetail");
+    const collectionState = document.querySelector("#collectionState");
+    const collectionDetail = document.querySelector("#collectionDetail");
+    const generationState = document.querySelector("#generationState");
+    const generationDetail = document.querySelector("#generationDetail");
+    const autoUploadState = document.querySelector("#autoUploadState");
+    const autoUploadDetail = document.querySelector("#autoUploadDetail");
+    const youtubeStateSummary = document.querySelector("#youtubeStateSummary");
+    const youtubeDetailSummary = document.querySelector("#youtubeDetailSummary");
     const statusText = document.querySelector("#statusText");
     const updatedAt = document.querySelector("#updatedAt");
     const refreshAll = document.querySelector("#refreshAll");
@@ -993,6 +1145,27 @@
       return date.toLocaleString();
     }
 
+    function formatAge(seconds) {
+      if (seconds === null || seconds === undefined) return "-";
+      const value = Number(seconds);
+      if (!Number.isFinite(value)) return "-";
+      if (value < 60) return `${Math.round(value)}초 전`;
+      if (value < 3600) return `${Math.round(value / 60)}분 전`;
+      if (value < 86400) return `${Math.round(value / 3600)}시간 전`;
+      return `${Math.round(value / 86400)}일 전`;
+    }
+
+    function setPill(element, text, state = "ok") {
+      element.textContent = text;
+      element.classList.remove("warn", "bad");
+      if (state !== "ok") element.classList.add(state);
+    }
+
+    function jobTitle(job) {
+      if (!job) return "-";
+      return job.title || job.filename || job.output_path || `#${job.id || "-"}`;
+    }
+
     function escapeText(value) {
       return String(value ?? "")
         .replaceAll("&", "&amp;")
@@ -1066,6 +1239,12 @@
           input.value = value;
         }
       });
+      quickBgmEnabled.checked = settings.VIDEO_BGM_ENABLED === "1" || settings.VIDEO_BGM_ENABLED === "true";
+      quickBgmTtsVolume.value = settings.VIDEO_BGM_TTS_VOLUME || "0.10";
+      quickBgmOnlyVolume.value = settings.VIDEO_BGM_ONLY_VOLUME || "0.14";
+      bgmStatus.textContent = quickBgmEnabled.checked
+        ? "BGM 자동 삽입 사용 중"
+        : "BGM 자동 삽입 꺼짐";
       const status = payload.status || {};
       settingsDetail.textContent = [
         `env ${status.env_exists ? "OK" : "없음"}`,
@@ -1084,6 +1263,32 @@
       if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
       applySettings(payload);
       settingsStatus.textContent = "설정 로드 완료";
+    }
+
+    async function saveQuickBgmSettings() {
+      saveBgmSettings.disabled = true;
+      bgmStatus.textContent = "BGM 설정 저장 중";
+      try {
+        const response = await fetch("/api/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            settings: {
+              VIDEO_BGM_ENABLED: quickBgmEnabled.checked ? "1" : "0",
+              VIDEO_BGM_TTS_VOLUME: quickBgmTtsVolume.value || "0.10",
+              VIDEO_BGM_ONLY_VOLUME: quickBgmOnlyVolume.value || "0.14"
+            }
+          })
+        });
+        const payload = await readApiJson(response);
+        applySettings(payload);
+        bgmStatus.textContent = "BGM 설정 저장 완료";
+      } catch (error) {
+        bgmStatus.textContent = error.message || "BGM 설정 저장 실패";
+        console.error(error);
+      } finally {
+        saveBgmSettings.disabled = false;
+      }
     }
 
     async function saveOperationSettings() {
@@ -1188,6 +1393,52 @@
       return statuses.join(" / ");
     }
 
+    async function loadOperationStatus() {
+      const response = await fetch("/api/operation-status");
+      const status = await readApiJson(response);
+      operationCheckedAt.textContent = `확인: ${formatDate(status.checked_at)}`;
+
+      const heartbeatAge = status.monitor?.heartbeat?.age_seconds;
+      const monitorOk = Boolean(status.monitor?.ok);
+      setPill(operationOverall, monitorOk ? "정상" : "확인 필요", monitorOk ? "ok" : "bad");
+      monitorState.textContent = monitorOk ? "동작 중" : "멈춤 의심";
+      monitorDetail.textContent = heartbeatAge === null || heartbeatAge === undefined
+        ? "heartbeat 없음"
+        : `heartbeat ${formatAge(heartbeatAge)} / 시작 ${formatDate(status.monitor?.started?.at)}`;
+
+      const latestLog = status.collection?.latest_log;
+      collectionState.textContent = latestLog ? `${latestLog.source || "-"} #${latestLog.msg_id || "-"}` : "수집 없음";
+      collectionDetail.textContent = latestLog
+        ? `저장 ${formatAge(status.collection.latest_saved.age_seconds)} / ${formatDate(status.collection.latest_saved.at)}`
+        : "-";
+
+      const latestVideo = status.generation?.latest_video;
+      const activeGeneration = Number(status.generation?.active_jobs || 0);
+      generationState.textContent = activeGeneration
+        ? `진행 중 ${activeGeneration}건`
+        : (latestVideo ? `${latestVideo.status || "-"} #${latestVideo.id || "-"}` : "작업 없음");
+      generationDetail.textContent = latestVideo
+        ? `${jobTitle(latestVideo)} / ${formatAge(status.generation.latest_updated.age_seconds)}`
+        : "-";
+
+      const latestAuto = status.auto_upload?.latest_job;
+      const activeAuto = Number(status.auto_upload?.active_jobs || 0);
+      autoUploadState.textContent = status.auto_upload?.enabled
+        ? (activeAuto ? `진행 중 ${activeAuto}건` : (latestAuto ? `${latestAuto.status || "-"} #${latestAuto.id || "-"}` : "대기"))
+        : "꺼짐";
+      autoUploadDetail.textContent = `일일 제한 ${status.auto_upload?.daily_limit || "-"} / ${status.auto_upload?.daily_completed || 0}개 완료`;
+
+      const latestUpload = status.youtube?.latest_upload;
+      const activeUploads = Number(status.youtube?.active_uploads || 0);
+      const youtubeReady = Boolean(status.youtube?.config?.token_exists);
+      youtubeStateSummary.textContent = activeUploads
+        ? `업로드 중 ${activeUploads}건`
+        : (latestUpload ? `${latestUpload.status || "-"} #${latestUpload.id || "-"}` : (youtubeReady ? "연결됨" : "토큰 없음"));
+      youtubeDetailSummary.innerHTML = latestUpload && latestUpload.youtube_url
+        ? `<a href="${escapeText(latestUpload.youtube_url)}" target="_blank" rel="noreferrer">${escapeText(formatAge(status.youtube.latest_updated.age_seconds))}</a>`
+        : `토큰 ${youtubeReady ? "있음" : "없음"}`;
+    }
+
     async function loadStats() {
       const response = await fetch("/api/stats");
       const storageResponse = await fetch("/api/storage");
@@ -1248,7 +1499,7 @@
         if (checkTelegram) {
           await syncTelegramLogs();
         }
-        await Promise.all([loadStats(), loadLogs(), loadVideoLibrary(), loadSettings()]);
+        await Promise.all([loadOperationStatus(), loadStats(), loadLogs(), loadVideoLibrary(), loadSettings()]);
       } catch (error) {
         statusText.textContent = "데이터를 불러오지 못했습니다";
         console.error(error);
@@ -1362,6 +1613,7 @@
       }
     });
     saveSettings.addEventListener("click", saveOperationSettings);
+    saveBgmSettings.addEventListener("click", saveQuickBgmSettings);
 
     refreshVideoLibrary.addEventListener("click", loadVideoLibrary);
 
@@ -1921,6 +2173,9 @@
       statusText.textContent = error.message || "초기 로드 실패";
       console.error(error);
     });
+    setInterval(() => {
+      loadOperationStatus().catch((error) => console.error(error));
+    }, 30000);
   </script>
 </body>
 </html>

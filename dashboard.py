@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 from flask import Flask, jsonify, redirect, render_template, request, send_from_directory, session, url_for
 
 from backup import cleanup_backups, create_backup, list_backup_files, storage_summary
+from auto_upload import daily_upload_count
 from backgrounds import (
     BACKGROUND_DIR,
     ACTIVE_BACKGROUND_LIMIT,
@@ -28,6 +29,7 @@ from backgrounds import (
     search_pexels_videos,
     update_background_asset,
 )
+from bgm import random_bgm_asset
 from db import (
     BASE_DIR,
     DB_PATH,
@@ -39,7 +41,7 @@ from db import (
     load_env_file,
     set_app_setting,
 )
-from render_video import OUTPUT_DIR, render_video
+from render_video import OUTPUT_DIR, mix_bgm, render_video
 from telegram_sync import catch_up_recent_messages_sync
 from tts import DEFAULT_RATE, DEFAULT_VOICE, RATE_OPTIONS, VOICE_OPTIONS, create_preview_audio
 from video_pipelines import enabled_sources, pipeline_for_source, pipeline_payload
@@ -84,6 +86,7 @@ YOUTUBE_SCHEDULE_WINDOWS = (
     (time(12, 0), time(13, 0)),
     (time(18, 0), time(21, 0)),
 )
+MONITOR_HEARTBEAT_STALE_SECONDS = 120
 SETTINGS_KEYS = {
     "TELEGRAM_API_ID",
     "TELEGRAM_API_HASH",
@@ -96,6 +99,20 @@ SETTINGS_KEYS = {
     "YOUTUBE_TOKEN_JSON",
     "TELEGRAM_SESSION_FILE_B64",
     "YOUTUBE_STATS_INTERVAL_SECONDS",
+    "AUTO_UPLOAD_ENABLED",
+    "AUTO_UPLOAD_SOURCE",
+    "AUTO_UPLOAD_POLL_INTERVAL_SECONDS",
+    "AUTO_UPLOAD_MAX_PER_RUN",
+    "AUTO_UPLOAD_DAILY_LIMIT",
+    "AUTO_UPLOAD_PRIVACY_STATUS",
+    "AUTO_UPLOAD_SCHEDULE_WINDOWS",
+    "AUTO_UPLOAD_MIN_LEAD_MINUTES",
+    "AUTO_UPLOAD_MIN_CONTENT_LENGTH",
+    "AUTO_UPLOAD_INCLUDE_EXISTING",
+    "AUTO_UPLOAD_RETRY_FAILED",
+    "SARAMRO_QUOTES_ENABLED",
+    "SARAMRO_QUOTES_IMPORT_LIMIT",
+    "SARAMRO_QUOTES_MAX_PAGES",
     "VIDEO_BGM_ENABLED",
     "VIDEO_BGM_TTS_VOLUME",
     "VIDEO_BGM_ONLY_VOLUME",
@@ -110,6 +127,20 @@ SECRET_KEYS = {
     "TELEGRAM_SESSION_FILE_B64",
 }
 BGM_SETTING_DEFAULTS = {
+    "AUTO_UPLOAD_ENABLED": "1",
+    "AUTO_UPLOAD_SOURCE": "글반장",
+    "AUTO_UPLOAD_POLL_INTERVAL_SECONDS": "60",
+    "AUTO_UPLOAD_MAX_PER_RUN": "1",
+    "AUTO_UPLOAD_DAILY_LIMIT": "10",
+    "AUTO_UPLOAD_PRIVACY_STATUS": "private",
+    "AUTO_UPLOAD_SCHEDULE_WINDOWS": "07:30-09:00,12:00-13:30,18:00-23:00",
+    "AUTO_UPLOAD_MIN_LEAD_MINUTES": "30",
+    "AUTO_UPLOAD_MIN_CONTENT_LENGTH": "10",
+    "AUTO_UPLOAD_INCLUDE_EXISTING": "0",
+    "AUTO_UPLOAD_RETRY_FAILED": "0",
+    "SARAMRO_QUOTES_ENABLED": "0",
+    "SARAMRO_QUOTES_IMPORT_LIMIT": "10",
+    "SARAMRO_QUOTES_MAX_PAGES": "5",
     "VIDEO_BGM_ENABLED": "1",
     "VIDEO_BGM_TTS_VOLUME": "0.10",
     "VIDEO_BGM_ONLY_VOLUME": "0.14",
@@ -120,6 +151,11 @@ def set_setting_value(name: str, value: str) -> None:
     if name not in SETTINGS_KEYS:
         raise ValueError(f"Unsupported setting: {name}")
     set_app_setting(name, value, is_secret=name in SECRET_KEYS)
+
+
+def setting_bool(name: str, default: str = "1") -> bool:
+    value = get_app_setting(name, os.getenv(name, default))
+    return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
 def masked_env_value(name: str) -> str:
@@ -150,6 +186,155 @@ def setting_payload() -> dict[str, object]:
             "pexels_key_exists": bool(os.getenv("PEXELS_API_KEY", "").strip()),
             "db_exists": DB_PATH.exists(),
             "db_path": str(DB_PATH),
+        },
+    }
+
+
+def parse_utc_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        try:
+            parsed = datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def age_payload(value: str | None, now: datetime | None = None) -> dict[str, object]:
+    parsed = parse_utc_timestamp(value)
+    if parsed is None:
+        return {"at": value, "age_seconds": None}
+    reference = now or datetime.now(timezone.utc)
+    return {
+        "at": parsed.isoformat(),
+        "age_seconds": max(0, int((reference - parsed).total_seconds())),
+    }
+
+
+def file_status(path: Path, now: datetime) -> dict[str, object]:
+    if not path.exists():
+        return {"path": str(path), "exists": False, "modified_at": None, "age_seconds": None}
+    modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+    return {
+        "path": str(path),
+        "exists": True,
+        "modified_at": modified.isoformat(),
+        "age_seconds": max(0, int((now - modified).total_seconds())),
+    }
+
+
+def latest_table_row(conn, table: str, order_column: str = "updated_at") -> dict[str, object] | None:
+    row = conn.execute(f"SELECT * FROM {table} ORDER BY {order_column} DESC, id DESC LIMIT 1").fetchone()
+    return dict(row) if row else None
+
+
+def operational_status_payload() -> dict[str, object]:
+    init_db(DB_PATH)
+    apply_db_settings_to_env()
+    now = datetime.now(timezone.utc)
+    with closing(connect(DB_PATH)) as conn:
+        state_rows = {
+            row["key"]: dict(row)
+            for row in conn.execute(
+                "SELECT key, value, updated_at FROM app_state WHERE key IN (?, ?, ?)",
+                ("monitor_heartbeat_at", "monitor_started_at", "monitor_status"),
+            )
+        }
+        latest_log = conn.execute(
+            """
+            SELECT id, source, msg_id, created_at, saved_at
+            FROM telegram_logs
+            ORDER BY saved_at DESC, id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        latest_video = latest_table_row(conn, "video_jobs")
+        latest_auto = latest_table_row(conn, "auto_upload_jobs")
+        latest_youtube = latest_table_row(conn, "youtube_uploads", "created_at")
+        active_video_jobs = conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM video_jobs
+            WHERE status IN ('pending', 'rendering', 'running')
+              AND updated_at >= datetime('now', '-1 hour')
+            """
+        ).fetchone()["count"]
+        active_auto_jobs = conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM auto_upload_jobs
+            WHERE status IN ('pending', 'rendering', 'uploading')
+              AND updated_at >= datetime('now', '-1 hour')
+            """
+        ).fetchone()["count"]
+        active_youtube_uploads = conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM youtube_uploads
+            WHERE status = 'uploading'
+              AND updated_at >= datetime('now', '-1 hour')
+            """
+        ).fetchone()["count"]
+
+    heartbeat_row = state_rows.get("monitor_heartbeat_at")
+    heartbeat = age_payload(heartbeat_row["value"] if heartbeat_row else None, now)
+    heartbeat_age = heartbeat["age_seconds"]
+    monitor_ok = isinstance(heartbeat_age, int) and heartbeat_age <= MONITOR_HEARTBEAT_STALE_SECONDS
+
+    latest_saved = age_payload(dict(latest_log)["saved_at"] if latest_log else None, now)
+    latest_video_age = age_payload(latest_video.get("updated_at") if latest_video else None, now)
+    latest_auto_age = age_payload(latest_auto.get("updated_at") if latest_auto else None, now)
+    latest_youtube_age = age_payload(latest_youtube.get("updated_at") if latest_youtube else None, now)
+    active_jobs = active_video_jobs + active_auto_jobs + active_youtube_uploads
+
+    return {
+        "checked_at": now.isoformat(),
+        "monitor": {
+            "ok": monitor_ok,
+            "status": state_rows.get("monitor_status", {}).get("value") or "unknown",
+            "heartbeat": heartbeat,
+            "started": age_payload(state_rows.get("monitor_started_at", {}).get("value"), now),
+            "stale_after_seconds": MONITOR_HEARTBEAT_STALE_SECONDS,
+        },
+        "collection": {
+            "latest_log": dict(latest_log) if latest_log else None,
+            "latest_saved": latest_saved,
+        },
+        "generation": {
+            "latest_video": latest_video,
+            "latest_updated": latest_video_age,
+            "active_jobs": active_video_jobs,
+        },
+        "auto_upload": {
+            "enabled": setting_bool("AUTO_UPLOAD_ENABLED", "1"),
+            "latest_job": latest_auto,
+            "latest_updated": latest_auto_age,
+            "active_jobs": active_auto_jobs,
+            "daily_limit": get_app_setting("AUTO_UPLOAD_DAILY_LIMIT", os.getenv("AUTO_UPLOAD_DAILY_LIMIT", "10")),
+            "daily_completed": daily_upload_count(now.astimezone(KST)),
+        },
+        "youtube": {
+            "latest_upload": latest_youtube,
+            "latest_updated": latest_youtube_age,
+            "active_uploads": active_youtube_uploads,
+            "config": youtube_config_status(),
+        },
+        "logs": {
+            "monitor_runner": file_status(BASE_DIR / "logs" / "monitor-runner.log", now),
+            "monitor": file_status(BASE_DIR / "monitor.log", now),
+            "dashboard_runner": file_status(BASE_DIR / "logs" / "dashboard-runner.log", now),
+        },
+        "overall": {
+            "ok": monitor_ok and active_jobs >= 0,
+            "active_jobs": active_jobs,
         },
     }
 
@@ -458,6 +643,12 @@ def api_stats():
             "by_source": by_source,
         }
     )
+
+
+@app.get("/api/operation-status")
+@require_auth
+def api_operation_status():
+    return jsonify(operational_status_payload())
 
 
 @app.post("/api/backup")
@@ -1025,6 +1216,11 @@ def run_long_video_job(job_id: int, count: int) -> None:
             str(output),
         ]
         subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        if setting_bool("VIDEO_BGM_ENABLED", "1"):
+            bgm_asset = random_bgm_asset()
+            if bgm_asset:
+                update_long_video_job(job_id, stage="BGM 합성 중", progress=88)
+                mix_bgm(output, BASE_DIR / str(bgm_asset["local_path"]))
         duration = ffprobe_seconds(output)
         update_long_video_job(
             job_id,

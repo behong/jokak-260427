@@ -4,17 +4,21 @@ import logging
 import os
 import signal
 from pathlib import Path
+from datetime import datetime, timezone
 
 from telethon import TelegramClient, events
 
+from auto_upload import run_auto_upload_once
 from channels import load_channels
-from db import DB_PATH, apply_db_settings_to_env, get_app_setting, init_db, normalize_message, save_message
+from db import DB_PATH, apply_db_settings_to_env, connect, get_app_setting, init_db, normalize_message, save_message
 
 BASE_DIR = Path(__file__).resolve().parent
 SESSION_NAME = os.getenv("TELEGRAM_SESSION", str(BASE_DIR / "telegram_monitor"))
 
 DEFAULT_CATCH_UP_LIMIT = 20
 DEFAULT_CATCH_UP_INTERVAL_SECONDS = 3600
+DEFAULT_AUTO_UPLOAD_INTERVAL_SECONDS = 60
+HEARTBEAT_INTERVAL_SECONDS = 30
 
 
 def int_setting(name: str, default: int) -> int:
@@ -47,6 +51,27 @@ def materialize_telegram_session_from_settings() -> None:
         return
     session_path.parent.mkdir(parents=True, exist_ok=True)
     session_path.write_bytes(base64.b64decode(encoded))
+
+
+def write_monitor_state(key: str, value: str) -> None:
+    with connect(DB_PATH) as conn:
+        conn.execute(
+            """
+            INSERT INTO app_state (key, value, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (key, value),
+        )
+        conn.commit()
+
+
+def write_monitor_heartbeat(status: str = "running") -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    write_monitor_state("monitor_heartbeat_at", now)
+    write_monitor_state("monitor_status", status)
 
 
 async def main() -> None:
@@ -163,19 +188,66 @@ async def main() -> None:
             else:
                 return
 
+    async def auto_upload_periodically() -> None:
+        while not stop_event.is_set():
+            interval = int_setting(
+                "AUTO_UPLOAD_POLL_INTERVAL_SECONDS",
+                DEFAULT_AUTO_UPLOAD_INTERVAL_SECONDS,
+            )
+            if interval <= 0:
+                logging.info(
+                    "Auto upload disabled because AUTO_UPLOAD_POLL_INTERVAL_SECONDS=%s",
+                    interval,
+                )
+                return
+            try:
+                processed = await asyncio.to_thread(run_auto_upload_once)
+                if processed:
+                    logging.info("Auto upload processed jobs=%s", processed)
+            except Exception:
+                logging.exception("Auto upload check failed")
+
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                continue
+            else:
+                return
+
+    async def heartbeat_periodically() -> None:
+        while not stop_event.is_set():
+            try:
+                write_monitor_heartbeat()
+            except Exception:
+                logging.exception("Monitor heartbeat update failed")
+
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=HEARTBEAT_INTERVAL_SECONDS)
+            except asyncio.TimeoutError:
+                continue
+            else:
+                return
+
     @client.on(events.NewMessage(chats=list(target_chats.keys())))
     async def handle_new_message(event: events.NewMessage.Event) -> None:
         await save_incoming_message(event.chat_id, event.message)
 
     async with client:
         logging.info("Monitoring %s chats. DB=%s", len(target_chats), DB_PATH)
+        write_monitor_state("monitor_started_at", datetime.now(timezone.utc).isoformat())
+        write_monitor_heartbeat()
         await catch_up_recent_messages()
         periodic_task = asyncio.create_task(catch_up_periodically())
+        auto_upload_task = asyncio.create_task(auto_upload_periodically())
+        heartbeat_task = asyncio.create_task(heartbeat_periodically())
         try:
             await stop_event.wait()
         finally:
+            write_monitor_heartbeat("stopping")
             periodic_task.cancel()
-            await asyncio.gather(periodic_task, return_exceptions=True)
+            auto_upload_task.cancel()
+            heartbeat_task.cancel()
+            await asyncio.gather(periodic_task, auto_upload_task, heartbeat_task, return_exceptions=True)
 
 
 if __name__ == "__main__":

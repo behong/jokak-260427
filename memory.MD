@@ -214,3 +214,7 @@
 - `render_video.py`에 `mix_bgm()`을 추가했다. CTA 검정 화면까지 포함한 최종 영상 길이에 맞춰 BGM을 loop/trim하고, fade in/out 후 기존 TTS 오디오와 낮은 볼륨으로 믹싱한다. 기본 볼륨은 TTS 영상 `0.10`, 무음 영상 `0.14`다.
 - 운영 설정에 `VIDEO_BGM_ENABLED`, `VIDEO_BGM_TTS_VOLUME`, `VIDEO_BGM_ONLY_VOLUME`을 추가했고 대시보드/설정 페이지에서 조정할 수 있다. 끄면 다음 생성 영상부터 BGM을 넣지 않는다.
 - 검증: `python -m py_compile bgm.py db.py render_video.py dashboard.py`, DB 마이그레이션에서 `bgm_assets`와 `video_jobs.bgm_asset_id` 확인, Flask test client 설정값/대시보드 입력 확인, 2초 테스트 mp4와 wav로 ffmpeg BGM 믹싱 후 오디오 트랙 생성 확인.
+
+- BGM 설정이 메인 대시보드에서 바로 보이지 않는 문제가 있어 `templates/dashboard.html` 본문에 항상 표시되는 `BGM` 빠른 설정 패널을 추가했다. 위치는 백업 버튼 아래이며, `자동 삽입`, `TTS 볼륨`, `무음 볼륨`, `저장`을 바로 조작한다.
+- 빠른 BGM 패널은 기존 `/api/settings`를 사용해 `VIDEO_BGM_ENABLED`, `VIDEO_BGM_TTS_VOLUME`, `VIDEO_BGM_ONLY_VOLUME`을 저장하고, `loadSettings()` 시 현재 값을 동기화한다.
+- 검증: `python -m py_compile dashboard.py`, Flask test client 렌더링에서 `quickBgmEnabled`, `saveBgmSettings`, `saveQuickBgmSettings` 포함 확인. 대시보드 재시작 후 PID 20152, `/login` 200, `/api/settings` 200 및 `VIDEO_BGM_ENABLED=1` 확인.

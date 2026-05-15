@@ -259,6 +259,58 @@
           <input id="settingCatchUpLimit" data-setting="TELEGRAM_CATCH_UP_LIMIT" type="number" min="0" max="100" step="1">
         </div>
         <div class="field">
+          <label for="settingAutoUploadEnabled">글반장 자동 업로드</label>
+          <input id="settingAutoUploadEnabled" data-setting="AUTO_UPLOAD_ENABLED" type="checkbox">
+        </div>
+        <div class="field">
+          <label for="settingAutoUploadInterval">자동 체크 간격(초)</label>
+          <input id="settingAutoUploadInterval" data-setting="AUTO_UPLOAD_POLL_INTERVAL_SECONDS" type="number" min="10" max="3600" step="10">
+        </div>
+        <div class="field">
+          <label for="settingAutoUploadWindows">쇼츠 예약 시간대</label>
+          <input id="settingAutoUploadWindows" data-setting="AUTO_UPLOAD_SCHEDULE_WINDOWS" placeholder="07:30-09:00,12:00-13:30,18:00-23:00">
+        </div>
+        <div class="field">
+          <label for="settingAutoUploadMax">회당 처리 개수</label>
+          <input id="settingAutoUploadMax" data-setting="AUTO_UPLOAD_MAX_PER_RUN" type="number" min="1" max="10" step="1">
+        </div>
+        <div class="field">
+          <label for="settingAutoUploadDailyLimit">하루 생성 개수</label>
+          <input id="settingAutoUploadDailyLimit" data-setting="AUTO_UPLOAD_DAILY_LIMIT" type="number" min="1" max="50" step="1">
+        </div>
+        <div class="field">
+          <label for="settingAutoUploadSource">자동 업로드 대상</label>
+          <input id="settingAutoUploadSource" data-setting="AUTO_UPLOAD_SOURCE" placeholder="글반장,사람로">
+        </div>
+        <div class="field">
+          <label for="settingAutoUploadLead">예약 최소 여유(분)</label>
+          <input id="settingAutoUploadLead" data-setting="AUTO_UPLOAD_MIN_LEAD_MINUTES" type="number" min="5" max="240" step="5">
+        </div>
+        <div class="field">
+          <label for="settingAutoUploadMinLength">최소 글자 수</label>
+          <input id="settingAutoUploadMinLength" data-setting="AUTO_UPLOAD_MIN_CONTENT_LENGTH" type="number" min="0" max="1000" step="1">
+        </div>
+        <div class="field">
+          <label for="settingAutoUploadIncludeExisting">기존 글 포함</label>
+          <input id="settingAutoUploadIncludeExisting" data-setting="AUTO_UPLOAD_INCLUDE_EXISTING" type="checkbox">
+        </div>
+        <div class="field">
+          <label for="settingAutoUploadRetry">실패 재시도</label>
+          <input id="settingAutoUploadRetry" data-setting="AUTO_UPLOAD_RETRY_FAILED" type="checkbox">
+        </div>
+        <div class="field">
+          <label for="settingSaramroEnabled">사람로 보충 수집</label>
+          <input id="settingSaramroEnabled" data-setting="SARAMRO_QUOTES_ENABLED" type="checkbox">
+        </div>
+        <div class="field">
+          <label for="settingSaramroLimit">사람로 회당 수집</label>
+          <input id="settingSaramroLimit" data-setting="SARAMRO_QUOTES_IMPORT_LIMIT" type="number" min="1" max="50" step="1">
+        </div>
+        <div class="field">
+          <label for="settingSaramroPages">사람로 확인 페이지</label>
+          <input id="settingSaramroPages" data-setting="SARAMRO_QUOTES_MAX_PAGES" type="number" min="1" max="50" step="1">
+        </div>
+        <div class="field">
           <label for="settingBgmEnabled">BGM 자동 삽입</label>
           <input id="settingBgmEnabled" data-setting="VIDEO_BGM_ENABLED" type="checkbox">
         </div>

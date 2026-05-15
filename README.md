@@ -123,15 +123,15 @@ python .\render_video.py 107
 - Pexels 활성 배경 랜덤 사용
 - 영상 내부에서 약 10초 단위로 활성 배경 랜덤 전환
 - Edge TTS 음성 합성 지원
-- `assets/bgm`에 음원이 있으면 낮은 볼륨으로 BGM 자동 합성
+- `assets/bgm`에 음원이 있으면 낮은 볼륨으로 BGM 자동 합성, 없으면 기본 BGM 자동 생성
 - 원본 텔레그램 이미지는 영상에 사용하지 않음
 - YouTube 설명에는 Pexels 출처 문구를 넣지 않음
 
 ## BGM
 
-BGM은 `assets/bgm` 아래의 로컬 음원만 사용합니다. 지원 확장자는 `.mp3`, `.m4a`, `.aac`, `.wav`, `.flac`, `.ogg`입니다.
+BGM은 `assets/bgm` 아래의 로컬 음원을 사용합니다. 지원 확장자는 `.mp3`, `.m4a`, `.aac`, `.wav`, `.flac`, `.ogg`입니다.
 
-- 음원이 없으면 기존처럼 BGM 없이 생성
+- 음원이 없으면 `assets/bgm/generated-soft-pad.wav` 기본 BGM을 자동 생성해서 사용
 - 음원이 있으면 새 영상 생성 때 랜덤 선택
 - 최근 사용한 BGM 10개는 우선 제외
 - TTS가 있는 영상 기본 볼륨은 `VIDEO_BGM_TTS_VOLUME=0.10`
@@ -194,8 +194,12 @@ python .\download_backgrounds.py --target 100
 
 - 글반장 로그와 직접입력 로그만 보관
 - 수집기 시작 시 최근 글을 보정 수집하고, 실행 중에는 `TELEGRAM_CATCH_UP_INTERVAL_SECONDS=3600` 기준으로 1시간마다 신규 글을 다시 확인
-- 글은 자동으로 영상/업로드 큐에 넣지 않음
-- 대시보드에서 글을 선택해 대본/영상 생성 후 필요할 때 수동으로 YouTube 업로드
+- `AUTO_UPLOAD_ENABLED=1`이면 모니터가 글반장 새 글을 자동 체크해 영상 생성 후 YouTube 예약 업로드
+- `AUTO_UPLOAD_DAILY_LIMIT=10` 기준으로 하루 자동 생성/업로드 개수를 제한
+- 글이 부족할 때 `SARAMRO_QUOTES_ENABLED=1`로 사람로 명언을 보충 수집 가능
+- 기본 예약 시간대는 `AUTO_UPLOAD_SCHEDULE_WINDOWS=07:30-09:00,12:00-13:30,18:00-23:00`
+- 기본값은 자동화 시작 이후 저장된 글만 처리하며, 기존 DB 글까지 포함하려면 `AUTO_UPLOAD_INCLUDE_EXISTING=1`
+- 자동 업로드 실패 건은 `auto_upload_jobs`에 실패 상태로 남기며, 재시도는 `AUTO_UPLOAD_RETRY_FAILED=1`로 켤 수 있음
 
 ## 백업
 
