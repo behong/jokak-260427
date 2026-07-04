@@ -70,6 +70,49 @@ git remote add origin https://github.com/<owner>/<repo>.git
 git branch -M main
 ```
 
+## GitHub 인증
+
+HTTPS remote를 쓰면 push 때마다 인증을 요구할 수 있다. GitHub는 계정 비밀번호 push를 지원하지 않으므로 `Password` 자리에는 Personal Access Token(PAT)을 넣어야 한다.
+
+반복 인증을 피하려면 SSH remote를 권장한다.
+
+WSL Ubuntu에서 SSH 키를 만든다.
+
+```bash
+ssh-keygen -t ed25519 -C "nayha77@gmail.com"
+cat ~/.ssh/id_ed25519.pub
+```
+
+출력된 공개키를 GitHub에 등록한다.
+
+```text
+GitHub -> Settings -> SSH and GPG keys -> New SSH key
+Title: DESKTOP-1KBEMVI WSL
+Key: cat ~/.ssh/id_ed25519.pub 출력값
+```
+
+연결을 확인한다.
+
+```bash
+ssh -T git@github.com
+```
+
+정상이면 remote를 SSH로 바꾼다.
+
+```bash
+git remote set-url origin git@github.com:behong/jokak-260427.git
+git remote -v
+git push
+```
+
+이후에는 push 때 GitHub username/password를 묻지 않는다.
+
+잘못된 HTTPS 인증 저장이 있으면 제거한다.
+
+```bash
+git config --global --unset credential.helper
+```
+
 민감정보가 포함되지 않았는지 확인한다.
 
 ```powershell
