@@ -1,7 +1,11 @@
 import asyncio
+import atexit
 import base64
+import contextlib
 import logging
 import os
+import platform
+import sqlite3
 import signal
 from pathlib import Path
 from datetime import datetime, timezone
@@ -19,6 +23,50 @@ DEFAULT_CATCH_UP_LIMIT = 20
 DEFAULT_CATCH_UP_INTERVAL_SECONDS = 3600
 DEFAULT_AUTO_UPLOAD_INTERVAL_SECONDS = 60
 HEARTBEAT_INTERVAL_SECONDS = 30
+LOCK_PATH = BASE_DIR / ".monitor.lock"
+_LOCK_HANDLE = None
+
+
+def acquire_single_instance_lock() -> None:
+    global _LOCK_HANDLE
+    LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    handle = LOCK_PATH.open("a+b")
+    try:
+        if platform.system() == "Windows":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        handle.close()
+        raise RuntimeError("monitor.py is already running; exiting") from exc
+    _LOCK_HANDLE = handle
+    atexit.register(release_single_instance_lock)
+
+
+def release_single_instance_lock() -> None:
+    global _LOCK_HANDLE
+    if _LOCK_HANDLE is None:
+        return
+    try:
+        _LOCK_HANDLE.seek(0)
+        if platform.system() == "Windows":
+            import msvcrt
+
+            msvcrt.locking(_LOCK_HANDLE.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(_LOCK_HANDLE.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass
+    finally:
+        with contextlib.suppress(OSError):
+            _LOCK_HANDLE.close()
+        _LOCK_HANDLE = None
 
 
 def int_setting(name: str, default: int) -> int:
@@ -232,26 +280,44 @@ async def main() -> None:
     async def handle_new_message(event: events.NewMessage.Event) -> None:
         await save_incoming_message(event.chat_id, event.message)
 
-    async with client:
-        logging.info("Monitoring %s chats. DB=%s", len(target_chats), DB_PATH)
-        write_monitor_state("monitor_started_at", datetime.now(timezone.utc).isoformat())
-        write_monitor_heartbeat()
-        await catch_up_recent_messages()
-        periodic_task = asyncio.create_task(catch_up_periodically())
-        auto_upload_task = asyncio.create_task(auto_upload_periodically())
-        heartbeat_task = asyncio.create_task(heartbeat_periodically())
+    while not stop_event.is_set():
         try:
-            await stop_event.wait()
-        finally:
-            write_monitor_heartbeat("stopping")
-            periodic_task.cancel()
-            auto_upload_task.cancel()
-            heartbeat_task.cancel()
-            await asyncio.gather(periodic_task, auto_upload_task, heartbeat_task, return_exceptions=True)
+            async with client:
+                logging.info("Monitoring %s chats. DB=%s", len(target_chats), DB_PATH)
+                write_monitor_state("monitor_started_at", datetime.now(timezone.utc).isoformat())
+                write_monitor_heartbeat()
+                await catch_up_recent_messages()
+                periodic_task = asyncio.create_task(catch_up_periodically())
+                auto_upload_task = asyncio.create_task(auto_upload_periodically())
+                heartbeat_task = asyncio.create_task(heartbeat_periodically())
+                try:
+                    await stop_event.wait()
+                finally:
+                    write_monitor_heartbeat("stopping")
+                    periodic_task.cancel()
+                    auto_upload_task.cancel()
+                    heartbeat_task.cancel()
+                    await asyncio.gather(periodic_task, auto_upload_task, heartbeat_task, return_exceptions=True)
+            break
+        except sqlite3.OperationalError as exc:
+            if "database is locked" not in str(exc).lower():
+                raise
+            logging.warning("Telegram session database is locked; retrying in 30 seconds")
+            try:
+                await client.disconnect()
+            except sqlite3.OperationalError as disconnect_exc:
+                if "database is locked" not in str(disconnect_exc).lower():
+                    raise
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=30)
+            except asyncio.TimeoutError:
+                continue
+            break
 
 
 if __name__ == "__main__":
     try:
+        acquire_single_instance_lock()
         asyncio.run(main())
     except RuntimeError as exc:
         raise SystemExit(str(exc)) from exc

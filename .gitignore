@@ -1,8 +1,12 @@
 .env
+.env.docker
+.env.docker.*
+!.env.docker.example
 client_secrets.json
 client_secret.json
 youtube_token.json
 .gitdata/
+.monitor.lock
 *.session
 *.session-journal
 telegram_logs.sqlite3
@@ -14,6 +18,7 @@ backups/
 static/media/
 outputs/
 assets/backgrounds/
+assets/bgm/generated/
 vendor/
 .tmp/
 __pycache__/

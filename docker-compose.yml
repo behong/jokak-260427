@@ -1,0 +1,49 @@
+name: jokak
+
+x-jokak-app: &jokak-app
+  image: jokak-app:latest
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
+  env_file:
+    - .env.docker
+  environment:
+    PYTHONUNBUFFERED: "1"
+  restart: unless-stopped
+  volumes:
+    - ./.env.docker:/app/.env:ro
+    - ./telegram_logs.sqlite3:/app/telegram_logs.sqlite3
+    - ./telegram_monitor.session:/app/telegram_monitor.session
+    - ./telegram_dashboard_refresh.session:/app/telegram_dashboard_refresh.session
+    - ./youtube_token.json:/app/youtube_token.json
+    - ./client_secret.json:/app/client_secret.json:ro
+    - ./outputs:/app/outputs
+    - ./assets/backgrounds:/app/assets/backgrounds
+    - ./assets/bgm:/app/assets/bgm
+    - ./backups:/app/backups
+    - ./logs:/app/logs
+
+services:
+  dashboard:
+    <<: *jokak-app
+    container_name: jokak-dashboard
+    command: ["python", "dashboard.py"]
+    ports:
+      - "127.0.0.1:8050:8050"
+    environment:
+      PYTHONUNBUFFERED: "1"
+      DASHBOARD_HOST: "0.0.0.0"
+      DASHBOARD_PORT: "8050"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8050/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  monitor:
+    <<: *jokak-app
+    container_name: jokak-monitor
+    command: ["python", "monitor.py"]
+    profiles:
+      - monitor

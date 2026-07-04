@@ -3,11 +3,13 @@ $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 $blockedPaths = @(
     ".env",
+    ".env.docker",
     "client_secret.json",
     "client_secrets.json",
     "youtube_token.json",
     "telegram_logs.sqlite3",
-    "telegram_monitor.session"
+    "telegram_monitor.session",
+    "telegram_dashboard_refresh.session"
 )
 $blockedDirs = @(
     "assets/backgrounds",

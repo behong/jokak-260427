@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 from flask import Flask, jsonify, redirect, render_template, request, send_from_directory, session, url_for
 
 from backup import cleanup_backups, create_backup, list_backup_files, storage_summary
-from auto_upload import daily_upload_count
+from auto_upload import daily_upload_count, next_peak_publish_at
 from backgrounds import (
     BACKGROUND_DIR,
     ACTIVE_BACKGROUND_LIMIT,
@@ -30,6 +30,7 @@ from backgrounds import (
     update_background_asset,
 )
 from bgm import random_bgm_asset
+from cleanup_videos import cleanup_candidates, cleanup_uploaded_videos
 from db import (
     BASE_DIR,
     DB_PATH,
@@ -41,11 +42,19 @@ from db import (
     load_env_file,
     set_app_setting,
 )
-from render_video import OUTPUT_DIR, mix_bgm, render_video
+from render_video import (
+    OUTPUT_DIR,
+    RENDER_CRF,
+    RENDER_PRESET,
+    audit_video_before_upload,
+    mix_bgm,
+    random_background_asset_id,
+    render_video,
+)
 from telegram_sync import catch_up_recent_messages_sync
-from tts import DEFAULT_RATE, DEFAULT_VOICE, RATE_OPTIONS, VOICE_OPTIONS, create_preview_audio
+from tts import DEFAULT_RATE, DEFAULT_VOICE, RATE_OPTIONS, VOICE_OPTIONS, create_elevenlabs_long_narration_audio, create_preview_audio
 from video_pipelines import enabled_sources, pipeline_for_source, pipeline_payload
-from video_script import generate_video_script
+from video_script import generate_video_script, split_source
 from youtube_metadata_ai import generate_tags, generate_title
 from youtube_upload import (
     YouTubeUploadError,
@@ -71,6 +80,8 @@ def dashboard_secret_key() -> str:
 
 app = Flask(__name__)
 app.secret_key = dashboard_secret_key()
+app.config["TEMPLATES_AUTO_RELOAD"] = True
+app.jinja_env.auto_reload = True
 VIDEO_FILENAME_PATTERN = re.compile(r"wisdom-library-(?P<log_id>\d+)-(?P<stamp>\d{8}-\d{6})(?:-audio)?\.mp4$")
 BRAND_NAME = "지혜로운 조각들"
 MANUAL_SOURCE = "직접입력"
@@ -80,6 +91,8 @@ LONG_VIDEO_WIDTH = 1920
 LONG_VIDEO_HEIGHT = 1080
 LONG_VIDEO_TARGET_SECONDS = 600
 LONG_VIDEO_MAX_SOURCE_COUNT = 40
+LONG_VIDEO_DEFAULT_HEALING_TEMPO = 0.90
+SUBPROCESS_CREATIONFLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 YOUTUBE_STATS_INTERVAL_SECONDS = int(os.getenv("YOUTUBE_STATS_INTERVAL_SECONDS", "3600"))
 KST = ZoneInfo("Asia/Seoul")
 YOUTUBE_SCHEDULE_WINDOWS = (
@@ -101,21 +114,27 @@ SETTINGS_KEYS = {
     "YOUTUBE_STATS_INTERVAL_SECONDS",
     "AUTO_UPLOAD_ENABLED",
     "AUTO_UPLOAD_SOURCE",
+    "AUTO_UPLOAD_BACKFILL_SOURCE",
     "AUTO_UPLOAD_POLL_INTERVAL_SECONDS",
     "AUTO_UPLOAD_MAX_PER_RUN",
     "AUTO_UPLOAD_DAILY_LIMIT",
     "AUTO_UPLOAD_PRIVACY_STATUS",
     "AUTO_UPLOAD_SCHEDULE_WINDOWS",
+    "AUTO_UPLOAD_SCHEDULE_TIMES",
     "AUTO_UPLOAD_MIN_LEAD_MINUTES",
     "AUTO_UPLOAD_MIN_CONTENT_LENGTH",
     "AUTO_UPLOAD_INCLUDE_EXISTING",
     "AUTO_UPLOAD_RETRY_FAILED",
+    "LONG_VIDEO_HEALING_TEMPO",
+    "LONG_VIDEO_BACKGROUND_COLLECTION",
     "SARAMRO_QUOTES_ENABLED",
     "SARAMRO_QUOTES_IMPORT_LIMIT",
     "SARAMRO_QUOTES_MAX_PAGES",
     "VIDEO_BGM_ENABLED",
     "VIDEO_BGM_TTS_VOLUME",
     "VIDEO_BGM_ONLY_VOLUME",
+    "VIDEO_CLEANUP_ENABLED",
+    "VIDEO_CLEANUP_RETENTION_DAYS",
 }
 SECRET_KEYS = {
     "TELEGRAM_API_HASH",
@@ -129,21 +148,27 @@ SECRET_KEYS = {
 BGM_SETTING_DEFAULTS = {
     "AUTO_UPLOAD_ENABLED": "1",
     "AUTO_UPLOAD_SOURCE": "글반장",
+    "AUTO_UPLOAD_BACKFILL_SOURCE": "글반장모음",
     "AUTO_UPLOAD_POLL_INTERVAL_SECONDS": "60",
     "AUTO_UPLOAD_MAX_PER_RUN": "1",
-    "AUTO_UPLOAD_DAILY_LIMIT": "10",
+    "AUTO_UPLOAD_DAILY_LIMIT": "4",
     "AUTO_UPLOAD_PRIVACY_STATUS": "private",
-    "AUTO_UPLOAD_SCHEDULE_WINDOWS": "07:30-09:00,12:00-13:30,18:00-23:00",
+    "AUTO_UPLOAD_SCHEDULE_WINDOWS": "07:00-08:00,19:00-20:00",
+    "AUTO_UPLOAD_SCHEDULE_TIMES": "07:00,07:30,19:00,19:30",
     "AUTO_UPLOAD_MIN_LEAD_MINUTES": "30",
     "AUTO_UPLOAD_MIN_CONTENT_LENGTH": "10",
     "AUTO_UPLOAD_INCLUDE_EXISTING": "0",
     "AUTO_UPLOAD_RETRY_FAILED": "0",
+    "LONG_VIDEO_HEALING_TEMPO": "0.90",
+    "LONG_VIDEO_BACKGROUND_COLLECTION": "healing-meditation",
     "SARAMRO_QUOTES_ENABLED": "0",
     "SARAMRO_QUOTES_IMPORT_LIMIT": "10",
     "SARAMRO_QUOTES_MAX_PAGES": "5",
     "VIDEO_BGM_ENABLED": "1",
     "VIDEO_BGM_TTS_VOLUME": "0.10",
     "VIDEO_BGM_ONLY_VOLUME": "0.14",
+    "VIDEO_CLEANUP_ENABLED": "1",
+    "VIDEO_CLEANUP_RETENTION_DAYS": "14",
 }
 
 
@@ -156,6 +181,34 @@ def set_setting_value(name: str, value: str) -> None:
 def setting_bool(name: str, default: str = "1") -> bool:
     value = get_app_setting(name, os.getenv(name, default))
     return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def setting_float(name: str, default: float, minimum: float, maximum: float) -> float:
+    raw = get_app_setting(name, os.getenv(name, str(default)))
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, value))
+
+
+def setting_int(name: str, default: int, minimum: int = 0, maximum: int | None = None) -> int:
+    raw = get_app_setting(name, os.getenv(name, str(default)))
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = default
+    value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
+def app_state_value(key: str) -> str | None:
+    init_db(DB_PATH)
+    with closing(connect(DB_PATH)) as conn:
+        row = conn.execute("SELECT value FROM app_state WHERE key = ?", (key,)).fetchone()
+    return str(row["value"]) if row and row["value"] is not None else None
 
 
 def masked_env_value(name: str) -> str:
@@ -318,7 +371,7 @@ def operational_status_payload() -> dict[str, object]:
             "latest_job": latest_auto,
             "latest_updated": latest_auto_age,
             "active_jobs": active_auto_jobs,
-            "daily_limit": get_app_setting("AUTO_UPLOAD_DAILY_LIMIT", os.getenv("AUTO_UPLOAD_DAILY_LIMIT", "10")),
+            "daily_limit": get_app_setting("AUTO_UPLOAD_DAILY_LIMIT", os.getenv("AUTO_UPLOAD_DAILY_LIMIT", "4")),
             "daily_completed": daily_upload_count(now.astimezone(KST)),
         },
         "youtube": {
@@ -361,6 +414,15 @@ def require_auth(view):
         return redirect(url_for("login", next=request.full_path))
 
     return wrapper
+
+
+@app.after_request
+def add_no_cache_headers(response):
+    if response.content_type.startswith("text/html"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
 
 
 def clamp_limit(value: str | None, default: int = 100) -> int:
@@ -499,6 +561,17 @@ def group_log_rows(rows: list[dict[str, object]], limit: int) -> list[dict[str, 
     return items[:limit]
 
 
+@app.get("/health")
+def health():
+    try:
+        init_db(DB_PATH)
+        with closing(connect(DB_PATH)) as conn:
+            conn.execute("SELECT 1").fetchone()
+    except Exception as exc:
+        return jsonify({"status": "error", "database": "unavailable", "error": str(exc)}), 500
+    return jsonify({"status": "ok", "database": "ok", "db_path": str(DB_PATH)})
+
+
 @app.get("/")
 @require_auth
 def index():
@@ -510,7 +583,7 @@ def index():
                 "SELECT DISTINCT source FROM telegram_logs ORDER BY source"
             )
         ]
-    for source in ("글반장", MANUAL_SOURCE):
+    for source in ("글반장", "글반장모음", MANUAL_SOURCE):
         if source not in sources:
             sources.append(source)
     return render_template(
@@ -550,6 +623,17 @@ def generated_videos_page():
     init_db(DB_PATH)
     return render_template(
         "generated_videos.html",
+        db_path=DB_PATH,
+        auth_enabled=auth_enabled(),
+    )
+
+
+@app.get("/long-videos")
+@require_auth
+def long_videos_page():
+    init_db(DB_PATH)
+    return render_template(
+        "long_videos.html",
         db_path=DB_PATH,
         auth_enabled=auth_enabled(),
     )
@@ -670,6 +754,58 @@ def api_storage():
     return jsonify(storage_summary())
 
 
+def video_cleanup_payload(retention_days: int | None = None) -> dict[str, object]:
+    retention_days = (
+        setting_int("VIDEO_CLEANUP_RETENTION_DAYS", 14, minimum=1, maximum=365)
+        if retention_days is None
+        else max(1, min(365, int(retention_days)))
+    )
+    mp4_files = list(OUTPUT_DIR.glob("*.mp4"))
+    total_size = sum(path.stat().st_size for path in mp4_files if path.exists())
+    candidates = cleanup_candidates(retention_days)
+    candidate_size = sum(candidate.size for candidate in candidates)
+    return {
+        "enabled": setting_bool("VIDEO_CLEANUP_ENABLED", "1"),
+        "retention_days": retention_days,
+        "last_run_date": app_state_value("video_cleanup_last_run_date"),
+        "total_count": len(mp4_files),
+        "total_size": total_size,
+        "total_size_gb": round(total_size / 1024**3, 3),
+        "candidate_count": len(candidates),
+        "candidate_size": candidate_size,
+        "candidate_size_gb": round(candidate_size / 1024**3, 3),
+        "protected_note": "긴영상 재료와 롱영상 파일은 정리 대상에서 제외됩니다.",
+        "items": [
+            {
+                "filename": candidate.path.name,
+                "log_id": candidate.log_id,
+                "size": candidate.size,
+                "modified_at": candidate.modified_at.isoformat(timespec="seconds"),
+            }
+            for candidate in candidates[:50]
+        ],
+    }
+
+
+@app.get("/api/videos/cleanup")
+@require_auth
+def api_video_cleanup_status():
+    retention_days = request.args.get("retention_days", type=int)
+    return jsonify(video_cleanup_payload(retention_days))
+
+
+@app.post("/api/videos/cleanup")
+@require_auth
+def api_video_cleanup_run():
+    payload = request.get_json(silent=True) or {}
+    retention_days = int(payload.get("retention_days") or setting_int("VIDEO_CLEANUP_RETENTION_DAYS", 14, minimum=1, maximum=365))
+    retention_days = max(1, min(365, retention_days))
+    set_setting_value("VIDEO_CLEANUP_RETENTION_DAYS", str(retention_days))
+    set_setting_value("VIDEO_CLEANUP_ENABLED", "1")
+    result = cleanup_uploaded_videos(retention_days, apply=True)
+    return jsonify({"result": result, "summary": video_cleanup_payload(retention_days)})
+
+
 @app.get("/api/settings")
 @require_auth
 def api_settings():
@@ -728,6 +864,7 @@ def api_portable_backup():
         capture_output=True,
         text=True,
         timeout=900,
+        creationflags=SUBPROCESS_CREATIONFLAGS,
     )
     if result.returncode != 0:
         return jsonify({"error": "portable_backup_failed", "stderr": result.stderr[-4000:]}), 500
@@ -908,7 +1045,11 @@ def generated_video_payload(
     return payload
 
 
-def list_generated_videos(limit: int = 20) -> list[dict[str, object]]:
+def list_generated_videos(
+    limit: int = 20,
+    video_type: str = "all",
+    query: str = "",
+) -> list[dict[str, object]]:
     init_db(DB_PATH)
     jobs_by_name: dict[str, dict[str, object]] = {}
     long_jobs_by_name: dict[str, dict[str, object]] = {}
@@ -944,13 +1085,16 @@ def list_generated_videos(limit: int = 20) -> list[dict[str, object]]:
 
     videos: list[dict[str, object]] = []
     for path in OUTPUT_DIR.glob("*.mp4"):
-        videos.append(
-            generated_video_payload(
-                path,
-                jobs_by_name.get(path.name),
-                long_jobs_by_name.get(path.name),
+        try:
+            videos.append(
+                generated_video_payload(
+                    path,
+                    jobs_by_name.get(path.name),
+                    long_jobs_by_name.get(path.name),
+                )
             )
-        )
+        except FileNotFoundError:
+            continue
 
     videos.sort(key=lambda item: float(item["modified_at"]), reverse=True)
     visible_videos: list[dict[str, object]] = []
@@ -963,6 +1107,23 @@ def list_generated_videos(limit: int = 20) -> list[dict[str, object]]:
                 continue
             seen_log_ids.add(normalized_log_id)
         visible_videos.append(video)
+    normalized_type = video_type if video_type in {"all", "long", "short"} else "all"
+    if normalized_type == "long":
+        visible_videos = [video for video in visible_videos if video.get("is_long_video")]
+    elif normalized_type == "short":
+        visible_videos = [video for video in visible_videos if not video.get("is_long_video")]
+
+    normalized_query = query.strip().casefold()
+    if normalized_query:
+        visible_videos = [
+            video
+            for video in visible_videos
+            if normalized_query
+            in " ".join(
+                str(video.get(key) or "")
+                for key in ("filename", "title", "status", "stage", "kind_label")
+            ).casefold()
+        ]
     return visible_videos[: max(1, min(int(limit), 100))]
 
 
@@ -993,14 +1154,23 @@ def next_long_video_series_number() -> int:
     pattern = re.compile(r"지혜로운조각 10분 시리즈\s+(\d+)")
     latest = 0
     with closing(connect(DB_PATH)) as conn:
-        rows = conn.execute(
+        title_rows = conn.execute(
             """
             SELECT title
             FROM long_video_jobs
-            WHERE title LIKE '지혜로운조각 10분 시리즈%'
+            WHERE status = 'ready'
+              AND output_path IS NOT NULL
+              AND title LIKE '지혜로운조각 10분 시리즈%'
+            UNION ALL
+            SELECT title
+            FROM youtube_uploads
+            WHERE status = 'uploaded'
+              AND youtube_url IS NOT NULL
+              AND filename LIKE 'long-wisdom-library-%'
+              AND title LIKE '지혜로운조각 10분 시리즈%'
             """
         ).fetchall()
-    for row in rows:
+    for row in title_rows:
         match = pattern.search(str(row["title"] or ""))
         if match:
             latest = max(latest, int(match.group(1)))
@@ -1128,6 +1298,7 @@ def ffprobe_seconds(path: Path) -> float:
         check=True,
         capture_output=True,
         text=True,
+        creationflags=SUBPROCESS_CREATIONFLAGS,
     )
     payload = json.loads(result.stdout)
     return float(payload["format"]["duration"])
@@ -1138,7 +1309,208 @@ def concat_file_line(path: Path) -> str:
     return f"file '{escaped}'"
 
 
-def run_long_video_job(job_id: int, count: int) -> None:
+def long_video_background_collection() -> str:
+    return get_app_setting("LONG_VIDEO_BACKGROUND_COLLECTION", "healing-meditation").strip()
+
+
+def long_video_background_assets(collection: str) -> list[dict[str, object]]:
+    if not collection:
+        return []
+    with closing(connect(DB_PATH)) as conn:
+        rows = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT id, provider, provider_id, query, author, preview_url,
+                       local_path, width, height, duration
+                FROM background_assets
+                WHERE collection = ?
+                  AND COALESCE(height, 0) >= 1080
+                  AND COALESCE(duration, 0) >= 6
+                ORDER BY id DESC
+                LIMIT 80
+                """,
+                (collection,),
+            )
+        ]
+    assets = [row for row in rows if (BASE_DIR / str(row.get("local_path") or "")).exists()]
+    random.shuffle(assets)
+    return assets
+
+
+def long_video_background_asset_payload(asset: dict[str, object]) -> dict[str, object]:
+    local_path = str(asset.get("local_path") or "")
+    return {
+        **asset,
+        "video_url": f"/backgrounds/{Path(local_path).name}" if local_path else None,
+    }
+
+
+def write_long_video_background_concat(
+    assets: list[dict[str, object]],
+    raw_seconds: float,
+    stamp: str,
+) -> Path | None:
+    if not assets:
+        return None
+    lines: list[str] = []
+    total_seconds = 0.0
+    index = 0
+    while total_seconds < raw_seconds and index < len(assets) * 20:
+        asset = assets[index % len(assets)]
+        lines.append(concat_file_line(BASE_DIR / str(asset["local_path"])))
+        total_seconds += max(6.0, float(asset.get("duration") or 0))
+        index += 1
+    if not lines:
+        return None
+    concat_list = OUTPUT_DIR / f"long-wisdom-library-bg-{stamp}.txt"
+    concat_list.write_text("\n".join(lines), encoding="utf-8")
+    return concat_list
+
+
+def long_video_tts_provider() -> str:
+    load_env_file(override=True)
+    return os.getenv("LONG_VIDEO_TTS_PROVIDER", "").strip().lower()
+
+
+def long_video_source_texts(candidates: list[dict[str, object]]) -> list[str]:
+    text_by_id = long_video_source_text_map(candidates)
+    texts: list[str] = []
+    for item in candidates:
+        text = long_video_candidate_text(item, text_by_id)
+        if text:
+            texts.append(text)
+    return texts
+
+
+def long_video_source_text_map(candidates: list[dict[str, object]]) -> dict[int, str]:
+    log_ids = [int(item["log_id"]) for item in candidates if item.get("log_id")]
+    if not log_ids:
+        return {}
+    placeholders = ",".join("?" for _ in log_ids)
+    with closing(connect(DB_PATH)) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT id, content
+            FROM telegram_logs
+            WHERE id IN ({placeholders})
+            """,
+            log_ids,
+        ).fetchall()
+    text_by_id: dict[int, str] = {}
+    for row in rows:
+        body, _source = split_source(str(row["content"] or ""))
+        text_by_id[int(row["id"])] = body.strip()
+    return text_by_id
+
+
+def long_video_candidate_text(
+    candidate: dict[str, object],
+    text_by_id: dict[int, str],
+) -> str:
+    if candidate.get("log_id"):
+        text = text_by_id.get(int(candidate["log_id"]), "")
+        if text:
+            return text
+    return str(candidate.get("title") or "").strip()
+
+
+def escape_drawtext_text(value: str) -> str:
+    return (
+        value.replace("\\", "\\\\")
+        .replace(":", "\\:")
+        .replace("'", "\\'")
+        .replace("%", "\\%")
+    )
+
+
+def wrap_caption_lines(text: str, max_chars: int = 24) -> list[str]:
+    words = [word for word in re.split(r"\s+", text.strip()) if word]
+    if not words:
+        return []
+    lines: list[str] = []
+    current = ""
+    for word in words:
+        candidate = f"{current} {word}".strip()
+        if current and len(candidate) > max_chars:
+            lines.append(current)
+            current = word
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    return lines
+
+
+def caption_chunks_for_text(text: str, max_chunks: int = 12) -> list[list[str]]:
+    paragraphs = [
+        line.strip()
+        for line in re.split(r"[\r\n]+", text)
+        if line.strip()
+    ]
+    cleaned: list[str] = []
+    for paragraph in paragraphs:
+        if paragraph.startswith("-") and len(paragraph) <= 32:
+            continue
+        cleaned.extend(
+            part.strip()
+            for part in re.split(r"(?<=[.!?。！？])\s+", paragraph)
+            if part.strip()
+        )
+    lines: list[str] = []
+    for paragraph in cleaned or paragraphs:
+        lines.extend(wrap_caption_lines(paragraph))
+    chunks = [lines[index : index + 2] for index in range(0, len(lines), 2)]
+    return [chunk for chunk in chunks if chunk][:max_chunks]
+
+
+def long_video_caption_events(
+    candidates: list[dict[str, object]],
+    segment_durations: list[float],
+) -> list[tuple[float, float, list[str]]]:
+    text_by_id = long_video_source_text_map(candidates)
+    events: list[tuple[float, float, list[str]]] = []
+    cursor = 0.0
+    for candidate, segment_duration in zip(candidates, segment_durations):
+        text = long_video_candidate_text(candidate, text_by_id)
+        chunks = caption_chunks_for_text(text)
+        segment_duration = max(0.1, float(segment_duration))
+        if chunks:
+            chunk_duration = segment_duration / len(chunks)
+            for index, chunk in enumerate(chunks):
+                start = cursor + index * chunk_duration + 0.35
+                end = cursor + (index + 1) * chunk_duration - 0.25
+                if end > start:
+                    events.append((start, end, chunk))
+        cursor += segment_duration
+    return events
+
+
+def long_video_caption_filter(
+    input_label: str,
+    output_label: str,
+    events: list[tuple[float, float, list[str]]],
+) -> str:
+    if not events:
+        return f"[{input_label}]null[{output_label}]"
+    font_file = "C\\:/Windows/Fonts/NanumMyeongjoBold.ttf"
+    filters: list[str] = []
+    for start, end, lines in events:
+        y_positions = ["h*0.70-text_h", "h*0.70+58"]
+        for line, y_position in zip(lines[:2], y_positions):
+            filters.append(
+                "drawtext="
+                f"fontfile='{font_file}':text='{escape_drawtext_text(line)}':"
+                "fontsize=42:fontcolor=white@0.94:"
+                "borderw=3:bordercolor=black@0.58:"
+                "shadowx=2:shadowy=3:shadowcolor=black@0.35:"
+                f"x=(w-text_w)/2:y={y_position}:"
+                f"enable='between(t\\,{start:.3f}\\,{end:.3f})'"
+            )
+    return f"[{input_label}]" + ",".join(filters) + f"[{output_label}]"
+
+
+def run_long_video_job(job_id: int, count: int, exclude_used: bool = True) -> None:
     if not LONG_VIDEO_LOCK.acquire(blocking=False):
         update_long_video_job(
             job_id,
@@ -1152,14 +1524,21 @@ def run_long_video_job(job_id: int, count: int) -> None:
         candidates = uploaded_video_candidates(
             max(count, LONG_VIDEO_MAX_SOURCE_COUNT),
             target_seconds=LONG_VIDEO_TARGET_SECONDS,
-            exclude_used=True,
+            exclude_used=exclude_used,
         )
         if len(candidates) < 2:
             raise RuntimeError("긴영상으로 합칠 새 업로드 완료 영상이 2개 이상 필요합니다.")
         source_seconds = sum(float(item.get("duration") or 0) for item in candidates)
-        if source_seconds < LONG_VIDEO_TARGET_SECONDS:
+        healing_tempo = setting_float(
+            "LONG_VIDEO_HEALING_TEMPO",
+            LONG_VIDEO_DEFAULT_HEALING_TEMPO,
+            minimum=0.80,
+            maximum=1.00,
+        )
+        effective_seconds = source_seconds / healing_tempo
+        if effective_seconds < LONG_VIDEO_TARGET_SECONDS:
             raise RuntimeError(
-                f"사용 가능한 새 업로드 완료 영상 길이가 10분 미만입니다. 현재 {int(source_seconds // 60)}분 {int(source_seconds % 60)}초입니다."
+                f"사용 가능한 새 업로드 완료 영상 길이가 10분 미만입니다. 현재 힐링 템포 적용 후 {int(effective_seconds // 60)}분 {int(effective_seconds % 60)}초입니다."
             )
 
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -1170,8 +1549,34 @@ def run_long_video_job(job_id: int, count: int) -> None:
             "\n".join(concat_file_line(Path(item["path"])) for item in candidates),
             encoding="utf-8",
         )
+        background_collection = long_video_background_collection()
+        background_concat_list = write_long_video_background_concat(
+            long_video_background_assets(background_collection),
+            source_seconds,
+            stamp,
+        )
         series_number = next_long_video_series_number()
-        title = f"지혜로운조각 10분 시리즈 {series_number}"
+        title = f"지혜로운조각 힐링 10분 시리즈 {series_number}"
+        elevenlabs_narration_path: Path | None = None
+        elevenlabs_narration_seconds = 0.0
+        elevenlabs_segment_durations: list[float] = []
+        if long_video_tts_provider() == "elevenlabs":
+            try:
+                update_long_video_job(job_id, stage="ElevenLabs TTS 생성 중", progress=25)
+                elevenlabs_narration_path, elevenlabs_segment_durations = create_elevenlabs_long_narration_audio(
+                    long_video_source_texts(candidates),
+                    f"long-{job_id}-{stamp}",
+                )
+                elevenlabs_narration_seconds = ffprobe_seconds(elevenlabs_narration_path)
+            except Exception as exc:
+                elevenlabs_narration_path = None
+                elevenlabs_narration_seconds = 0.0
+                update_long_video_job(
+                    job_id,
+                    stage="ElevenLabs 실패, 기존 오디오로 진행",
+                    error=f"ElevenLabs fallback: {exc}",
+                    progress=30,
+                )
         update_long_video_job(
             job_id,
             title=title,
@@ -1189,38 +1594,137 @@ def run_long_video_job(job_id: int, count: int) -> None:
             "0",
             "-i",
             str(concat_list),
-            "-filter_complex",
-            (
-                "[0:v]split=2[bgsrc][fgsrc];"
-                f"[bgsrc]scale={LONG_VIDEO_WIDTH}:{LONG_VIDEO_HEIGHT}:force_original_aspect_ratio=increase,"
-                f"crop={LONG_VIDEO_WIDTH}:{LONG_VIDEO_HEIGHT},gblur=sigma=32,eq=brightness=-0.08[bg];"
-                f"[fgsrc]scale=-2:{LONG_VIDEO_HEIGHT}[fg];"
-                "[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1[v]"
-            ),
-            "-map",
-            "[v]",
-            "-map",
-            "0:a?",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "20",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "160k",
-            "-movflags",
-            "+faststart",
-            str(output),
         ]
-        subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-        if setting_bool("VIDEO_BGM_ENABLED", "1"):
-            bgm_asset = random_bgm_asset()
-            if bgm_asset:
-                update_long_video_job(job_id, stage="BGM 합성 중", progress=88)
-                mix_bgm(output, BASE_DIR / str(bgm_asset["local_path"]))
+        if background_concat_list:
+            command.extend(
+                [
+                    "-f",
+                    "concat",
+                    "-safe",
+                    "0",
+                    "-i",
+                    str(background_concat_list),
+                ]
+            )
+        if elevenlabs_narration_path:
+            video_tempo = max(0.25, min(4.0, elevenlabs_narration_seconds / source_seconds))
+            segment_durations = (
+                elevenlabs_segment_durations
+                if len(elevenlabs_segment_durations) == len(candidates)
+                else [float(item.get("duration") or 0) * video_tempo for item in candidates]
+            )
+            caption_filter = long_video_caption_filter(
+                "basev",
+                "v",
+                long_video_caption_events(candidates, segment_durations),
+            )
+            if background_concat_list:
+                narration_input_index = 2
+                filter_complex = (
+                    f"[1:v]scale={LONG_VIDEO_WIDTH}:{LONG_VIDEO_HEIGHT}:force_original_aspect_ratio=increase,"
+                    f"crop={LONG_VIDEO_WIDTH}:{LONG_VIDEO_HEIGHT},"
+                    f"eq=brightness=-0.03:saturation=0.92,setsar=1,setpts={video_tempo:.6f}*PTS[basev];"
+                    f"{caption_filter}"
+                )
+            else:
+                narration_input_index = 1
+                filter_complex = (
+                    "[0:v]split=2[bgsrc][fgsrc];"
+                    f"[bgsrc]scale={LONG_VIDEO_WIDTH}:{LONG_VIDEO_HEIGHT}:force_original_aspect_ratio=increase,"
+                    f"crop={LONG_VIDEO_WIDTH}:{LONG_VIDEO_HEIGHT},gblur=sigma=32,eq=brightness=-0.08[bg];"
+                    f"[fgsrc]scale=-2:{LONG_VIDEO_HEIGHT}[fg];"
+                    f"[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,setpts={video_tempo:.6f}*PTS[basev];"
+                    f"{caption_filter}"
+                )
+            command.extend(
+                [
+                    "-i",
+                    str(elevenlabs_narration_path),
+                    "-filter_complex",
+                    filter_complex,
+                    "-map",
+                    "[v]",
+                    "-map",
+                    f"{narration_input_index}:a:0",
+                    "-shortest",
+                ]
+            )
+        else:
+            video_tempo = 1 / healing_tempo
+            segment_durations = [
+                float(item.get("duration") or 0) / healing_tempo
+                for item in candidates
+            ]
+            caption_filter = long_video_caption_filter(
+                "basev",
+                "v",
+                long_video_caption_events(candidates, segment_durations),
+            )
+            if background_concat_list:
+                filter_complex = (
+                    f"[1:v]scale={LONG_VIDEO_WIDTH}:{LONG_VIDEO_HEIGHT}:force_original_aspect_ratio=increase,"
+                    f"crop={LONG_VIDEO_WIDTH}:{LONG_VIDEO_HEIGHT},"
+                    f"eq=brightness=-0.03:saturation=0.92,setsar=1,setpts={video_tempo:.6f}*PTS[basev];"
+                    f"{caption_filter};"
+                    f"[0:a:0]atempo={healing_tempo:.6f}[a]"
+                )
+            else:
+                filter_complex = (
+                    "[0:v]split=2[bgsrc][fgsrc];"
+                    f"[bgsrc]scale={LONG_VIDEO_WIDTH}:{LONG_VIDEO_HEIGHT}:force_original_aspect_ratio=increase,"
+                    f"crop={LONG_VIDEO_WIDTH}:{LONG_VIDEO_HEIGHT},gblur=sigma=32,eq=brightness=-0.08[bg];"
+                    f"[fgsrc]scale=-2:{LONG_VIDEO_HEIGHT}[fg];"
+                    f"[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,setpts={video_tempo:.6f}*PTS[basev];"
+                    f"{caption_filter};"
+                    f"[0:a:0]atempo={healing_tempo:.6f}[a]"
+                )
+            command.extend(
+                [
+                    "-filter_complex",
+                    filter_complex,
+                    "-map",
+                    "[v]",
+                    "-map",
+                    "[a]",
+                ]
+            )
+        command.extend(
+            [
+                "-map_metadata",
+                "-1",
+                "-map_chapters",
+                "-1",
+                "-c:v",
+                "libx264",
+                "-preset",
+                RENDER_PRESET,
+                "-crf",
+                RENDER_CRF,
+                "-pix_fmt",
+                "yuv420p",
+                "-colorspace",
+                "bt709",
+                "-color_primaries",
+                "bt709",
+                "-color_trc",
+                "bt709",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "160k",
+                "-movflags",
+                "+faststart",
+                str(output),
+            ]
+        )
+        subprocess.run(
+            command,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            creationflags=SUBPROCESS_CREATIONFLAGS,
+        )
         duration = ffprobe_seconds(output)
         update_long_video_job(
             job_id,
@@ -1325,7 +1829,7 @@ def run_video_render_job(
                 """
                 UPDATE video_jobs
                 SET status = ?, stage = ?, progress = ?, output_path = ?, title = ?, bgm_asset_id = ?,
-                    error = NULL, updated_at = CURRENT_TIMESTAMP
+                    background_asset_ids = ?, error = NULL, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
                 (
@@ -1335,6 +1839,7 @@ def run_video_render_job(
                     relative_output,
                     str(script["title"]),
                     script.get("bgm_asset_id"),
+                    json.dumps(script.get("background_asset_ids") or []),
                     job_id,
                 ),
             )
@@ -1473,38 +1978,7 @@ def youtube_metadata_for_video(filename: str) -> dict[str, object]:
 
 
 def random_scheduled_publish_at(now: datetime | None = None) -> datetime:
-    now_kst = (now or datetime.now(KST)).astimezone(KST)
-    search_date = now_kst.date()
-    minimum = now_kst + timedelta(minutes=20)
-
-    for day_offset in range(14):
-        candidate_date = search_date + timedelta(days=day_offset)
-        if candidate_date.weekday() >= 5:
-            continue
-
-        windows: list[tuple[datetime, datetime]] = []
-        for start_time, end_time in YOUTUBE_SCHEDULE_WINDOWS:
-            start_at = datetime.combine(candidate_date, start_time, tzinfo=KST)
-            end_at = datetime.combine(candidate_date, end_time, tzinfo=KST)
-            start_at = max(start_at, minimum)
-            if start_at < end_at:
-                windows.append((start_at, end_at))
-
-        if not windows:
-            continue
-
-        start_at, end_at = random.choice(windows)
-        seconds = max(1, int((end_at - start_at).total_seconds()))
-        return start_at + timedelta(seconds=random.randint(0, seconds - 1))
-
-    next_weekday = search_date + timedelta(days=1)
-    while next_weekday.weekday() >= 5:
-        next_weekday += timedelta(days=1)
-    start_time, end_time = random.choice(YOUTUBE_SCHEDULE_WINDOWS)
-    start_at = datetime.combine(next_weekday, start_time, tzinfo=KST)
-    end_at = datetime.combine(next_weekday, end_time, tzinfo=KST)
-    seconds = int((end_at - start_at).total_seconds())
-    return start_at + timedelta(seconds=random.randint(0, seconds - 1))
+    return next_peak_publish_at(now)
 
 
 def scheduled_publish_payload(publish_at: datetime | None) -> dict[str, str] | None:
@@ -1656,6 +2130,7 @@ def run_youtube_upload_job(
     scheduled_publish_at: datetime | None,
 ) -> None:
     try:
+        audit_video_before_upload(path, label=f"manual-youtube-upload-{upload_id}")
         result = upload_video(
             path,
             str(metadata["title"]),
@@ -1830,9 +2305,7 @@ def api_render_video(log_id: int):
         tts_rate = tts_rate_from_payload(payload.get("tts_rate"))
 
     if background_asset_id is None:
-        backgrounds = list_background_assets(limit=ACTIVE_BACKGROUND_LIMIT, active_only=True)
-        if backgrounds:
-            background_asset_id = int(random.choice(backgrounds)["id"])
+        background_asset_id = random_background_asset_id()
 
     with closing(connect(DB_PATH)) as conn:
         cursor = conn.execute(
@@ -1901,7 +2374,26 @@ def api_videos():
         limit = int(request.args.get("limit", "12"))
     except ValueError:
         limit = 12
-    return jsonify({"videos": list_generated_videos(limit)})
+    video_type = request.args.get("type", "all")
+    query = request.args.get("q", "")
+    return jsonify({"videos": list_generated_videos(limit, video_type, query)})
+
+
+@app.get("/api/long-videos/backgrounds")
+@require_auth
+def api_long_video_backgrounds():
+    collection = long_video_background_collection()
+    assets = [
+        long_video_background_asset_payload(asset)
+        for asset in long_video_background_assets(collection)
+    ]
+    return jsonify(
+        {
+            "collection": collection,
+            "count": len(assets),
+            "backgrounds": assets,
+        }
+    )
 
 
 @app.get("/api/long-videos/candidates")
@@ -1911,18 +2403,30 @@ def api_long_video_candidates():
         limit = int(request.args.get("limit", str(LONG_VIDEO_MAX_SOURCE_COUNT)))
     except ValueError:
         limit = LONG_VIDEO_MAX_SOURCE_COUNT
+    include_used = request.args.get("include_used") == "1"
     candidates = uploaded_video_candidates(
         limit,
         target_seconds=LONG_VIDEO_TARGET_SECONDS,
-        exclude_used=True,
+        exclude_used=not include_used,
     )
     total_seconds = sum(float(item.get("duration") or 0) for item in candidates)
+    healing_tempo = setting_float(
+        "LONG_VIDEO_HEALING_TEMPO",
+        LONG_VIDEO_DEFAULT_HEALING_TEMPO,
+        minimum=0.80,
+        maximum=1.00,
+    )
+    effective_seconds = total_seconds / healing_tempo if healing_tempo else total_seconds
     return jsonify(
         {
             "count": len(candidates),
             "duration": total_seconds,
+            "total_seconds": total_seconds,
+            "effective_seconds": effective_seconds,
+            "healing_tempo": healing_tempo,
             "target_seconds": LONG_VIDEO_TARGET_SECONDS,
-            "ready": total_seconds >= LONG_VIDEO_TARGET_SECONDS,
+            "ready": effective_seconds >= LONG_VIDEO_TARGET_SECONDS,
+            "include_used": include_used,
             "candidates": [
                 {
                     key: value
@@ -1944,6 +2448,7 @@ def api_create_long_video():
     except ValueError:
         count = LONG_VIDEO_MAX_SOURCE_COUNT
     count = max(2, min(count, LONG_VIDEO_MAX_SOURCE_COUNT))
+    include_used = bool(payload.get("include_used") or request.args.get("include_used") == "1")
 
     with closing(connect(DB_PATH)) as conn:
         cursor = conn.execute(
@@ -1956,7 +2461,7 @@ def api_create_long_video():
         job_id = int(cursor.lastrowid)
         conn.commit()
 
-    thread = threading.Thread(target=run_long_video_job, args=(job_id, count), daemon=True)
+    thread = threading.Thread(target=run_long_video_job, args=(job_id, count, not include_used), daemon=True)
     thread.start()
     return jsonify({"job": long_video_job_by_id(job_id)}), 202
 
@@ -1976,11 +2481,15 @@ def api_delete_video(filename: str):
     path = (OUTPUT_DIR / filename).resolve()
     if path.parent != OUTPUT_DIR.resolve() or path.suffix.lower() != ".mp4":
         return jsonify({"error": "invalid_filename"}), 400
-    if not path.exists():
-        return jsonify({"error": "not_found"}), 404
 
     relative_output = path.resolve().relative_to(BASE_DIR).as_posix()
-    path.unlink()
+    deleted_file = False
+    if path.exists():
+        try:
+            path.unlink()
+            deleted_file = True
+        except PermissionError:
+            return jsonify({"error": "video_file_in_use"}), 409
     with closing(connect(DB_PATH)) as conn:
         conn.execute(
             """
@@ -1990,8 +2499,16 @@ def api_delete_video(filename: str):
             """,
             ("deleted", "file deleted from dashboard", relative_output),
         )
+        conn.execute(
+            """
+            UPDATE long_video_jobs
+            SET status = ?, error = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE output_path = ?
+            """,
+            ("deleted", "file deleted from dashboard", relative_output),
+        )
         conn.commit()
-    return jsonify({"deleted": filename})
+    return jsonify({"deleted": filename, "file_deleted": deleted_file})
 
 
 @app.get("/api/videos/<path:filename>/youtube")
