@@ -46,6 +46,9 @@ CREATE TABLE IF NOT EXISTS video_jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     log_id INTEGER NOT NULL,
     background_asset_id INTEGER,
+    background_asset_ids TEXT,
+    tts_voice TEXT,
+    tts_rate TEXT,
     status TEXT NOT NULL,
     output_path TEXT,
     title TEXT,
@@ -83,6 +86,14 @@ CREATE TABLE IF NOT EXISTS bgm_assets (
     local_path TEXT NOT NULL UNIQUE,
     title TEXT,
     enabled INTEGER NOT NULL DEFAULT 1,
+    source_type TEXT NOT NULL DEFAULT 'unknown',
+    source_url TEXT,
+    license_type TEXT,
+    attribution_text TEXT,
+    approved INTEGER NOT NULL DEFAULT 0,
+    usage_scope TEXT NOT NULL DEFAULT 'all',
+    mood TEXT,
+    duration REAL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
 """
@@ -104,6 +115,28 @@ CREATE TABLE IF NOT EXISTS youtube_uploads (
     comment_count INTEGER,
     stats_checked_at TIMESTAMP,
     scheduled_publish_at TEXT,
+    comment_thread_id TEXT,
+    comment_posted_at TIMESTAMP,
+    playlist_id TEXT,
+    playlist_item_id TEXT,
+    caption_id TEXT,
+    postprocess_error TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+"""
+
+CREATE_NAVER_UPLOAD_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS naver_uploads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    filename TEXT NOT NULL,
+    video_job_id INTEGER,
+    log_id INTEGER,
+    channel_url TEXT,
+    title TEXT,
+    status TEXT NOT NULL,
+    response TEXT,
+    error TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
@@ -116,6 +149,7 @@ CREATE TABLE IF NOT EXISTS auto_upload_jobs (
     status TEXT NOT NULL,
     video_job_id INTEGER,
     youtube_upload_id INTEGER,
+    naver_upload_id INTEGER,
     output_path TEXT,
     error TEXT,
     scheduled_publish_at TEXT,
@@ -134,6 +168,27 @@ CREATE TABLE IF NOT EXISTS long_video_jobs (
     source_filenames TEXT,
     stage TEXT,
     progress INTEGER,
+    error TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+"""
+
+CREATE_HEALING_LONGFORM_JOB_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS healing_longform_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    status TEXT NOT NULL,
+    stage TEXT,
+    progress INTEGER NOT NULL DEFAULT 0,
+    theme TEXT,
+    duration_minutes INTEGER,
+    config_json TEXT,
+    script_path TEXT,
+    metadata_json TEXT,
+    output_path TEXT,
+    actual_duration REAL,
+    tts_voice TEXT,
+    trigger TEXT NOT NULL DEFAULT 'manual',
     error TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -169,25 +224,48 @@ DEFAULT_SETTING_KEYS = {
     "DASHBOARD_HOST": False,
     "DASHBOARD_PORT": False,
     "PEXELS_API_KEY": True,
+    "ELEVENLABS_API_KEY": True,
+    "ELEVENLABS_VOICE_ID": False,
+    "SHORT_TTS_PROVIDER": False,
+    "SHORT_ELEVENLABS_MODEL_ID": False,
     "YOUTUBE_CLIENT_SECRET_JSON": True,
     "YOUTUBE_TOKEN_JSON": True,
     "TELEGRAM_SESSION_FILE_B64": True,
     "YOUTUBE_STATS_INTERVAL_SECONDS": False,
     "AUTO_UPLOAD_ENABLED": False,
     "AUTO_UPLOAD_SOURCE": False,
+    "AUTO_UPLOAD_BACKFILL_SOURCE": False,
     "AUTO_UPLOAD_POLL_INTERVAL_SECONDS": False,
     "AUTO_UPLOAD_MAX_PER_RUN": False,
     "AUTO_UPLOAD_DAILY_LIMIT": False,
     "AUTO_UPLOAD_PRIVACY_STATUS": False,
     "AUTO_UPLOAD_SCHEDULE_WINDOWS": False,
+    "AUTO_UPLOAD_SCHEDULE_TIMES": False,
+    "LONGFORM_UPLOAD_SCHEDULE_TIMES": False,
+    "LONGFORM_YOUTUBE_PLAYLIST_NAME": False,
     "AUTO_UPLOAD_MIN_LEAD_MINUTES": False,
     "AUTO_UPLOAD_MIN_CONTENT_LENGTH": False,
     "AUTO_UPLOAD_INCLUDE_EXISTING": False,
     "AUTO_UPLOAD_RETRY_FAILED": False,
+    "LONG_VIDEO_HEALING_TEMPO": False,
+    "LONG_VIDEO_BACKGROUND_COLLECTION": False,
+    "YOUTUBE_AUTO_COMMENT_ENABLED": False,
+    "YOUTUBE_AUTO_COMMENT_TEXT": False,
+    "NAVER_CLIP_AUTO_UPLOAD_ENABLED": False,
+    "NAVER_CLIP_DAILY_LIMIT": False,
+    "NAVER_CLIP_SCHEDULE_WINDOW": False,
+    "NAVER_CLIP_API_URL": False,
+    "NAVER_CLIP_CHANNEL_URL": False,
+    "NAVER_CLIP_HOST_VIDEO_ROOT": False,
+    "NAVER_CLIP_CATEGORY1": False,
+    "NAVER_CLIP_CATEGORY2": False,
+    "NAVER_CLIP_KEEP_OPEN_SECONDS": False,
+    "NAVER_CLIP_TIMEOUT_SECONDS": False,
     "SARAMRO_QUOTES_ENABLED": False,
     "SARAMRO_QUOTES_IMPORT_LIMIT": False,
     "SARAMRO_QUOTES_MAX_PAGES": False,
     "VIDEO_BGM_ENABLED": False,
+    "VIDEO_BGM_ALLOW_UNVERIFIED": False,
     "VIDEO_BGM_TTS_VOLUME": False,
     "VIDEO_BGM_ONLY_VOLUME": False,
 }
@@ -290,8 +368,10 @@ def init_db(db_path: Path = DB_PATH) -> None:
         conn.execute(CREATE_BACKGROUND_TABLE_SQL)
         conn.execute(CREATE_BGM_TABLE_SQL)
         conn.execute(CREATE_YOUTUBE_UPLOAD_TABLE_SQL)
+        conn.execute(CREATE_NAVER_UPLOAD_TABLE_SQL)
         conn.execute(CREATE_AUTO_UPLOAD_TABLE_SQL)
         conn.execute(CREATE_LONG_VIDEO_JOB_TABLE_SQL)
+        conn.execute(CREATE_HEALING_LONGFORM_JOB_TABLE_SQL)
         conn.execute(CREATE_APP_STATE_TABLE_SQL)
         conn.execute(CREATE_APP_SETTINGS_TABLE_SQL)
         migrate_env_to_app_settings(conn)
@@ -302,12 +382,18 @@ def init_db(db_path: Path = DB_PATH) -> None:
         }
         if "background_asset_id" not in video_columns:
             conn.execute("ALTER TABLE video_jobs ADD COLUMN background_asset_id INTEGER")
+        if "background_asset_ids" not in video_columns:
+            conn.execute("ALTER TABLE video_jobs ADD COLUMN background_asset_ids TEXT")
         if "stage" not in video_columns:
             conn.execute("ALTER TABLE video_jobs ADD COLUMN stage TEXT")
         if "progress" not in video_columns:
             conn.execute("ALTER TABLE video_jobs ADD COLUMN progress INTEGER")
         if "bgm_asset_id" not in video_columns:
             conn.execute("ALTER TABLE video_jobs ADD COLUMN bgm_asset_id INTEGER")
+        if "tts_voice" not in video_columns:
+            conn.execute("ALTER TABLE video_jobs ADD COLUMN tts_voice TEXT")
+        if "tts_rate" not in video_columns:
+            conn.execute("ALTER TABLE video_jobs ADD COLUMN tts_rate TEXT")
         background_columns = {
             row[1]
             for row in conn.execute("PRAGMA table_info(background_assets)").fetchall()
@@ -319,6 +405,31 @@ def init_db(db_path: Path = DB_PATH) -> None:
             )
         if "collection" not in background_columns:
             conn.execute("ALTER TABLE background_assets ADD COLUMN collection TEXT")
+        bgm_columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(bgm_assets)").fetchall()
+        }
+        for column, definition in {
+            "source_type": "TEXT NOT NULL DEFAULT 'unknown'",
+            "source_url": "TEXT",
+            "license_type": "TEXT",
+            "attribution_text": "TEXT",
+            "approved": "INTEGER NOT NULL DEFAULT 0",
+            "usage_scope": "TEXT NOT NULL DEFAULT 'all'",
+            "mood": "TEXT",
+            "duration": "REAL",
+        }.items():
+            if column not in bgm_columns:
+                conn.execute(f"ALTER TABLE bgm_assets ADD COLUMN {column} {definition}")
+        conn.execute(
+            """
+            UPDATE bgm_assets
+            SET source_type = 'procedural', license_type = 'generated', approved = 1,
+                usage_scope = 'all', mood = COALESCE(NULLIF(mood, ''), 'calm')
+            WHERE local_path LIKE 'assets/bgm/generated/%'
+               OR local_path = 'assets/bgm/generated-soft-pad.wav'
+            """
+        )
         youtube_upload_columns = {
             row[1]
             for row in conn.execute("PRAGMA table_info(youtube_uploads)").fetchall()
@@ -333,12 +444,35 @@ def init_db(db_path: Path = DB_PATH) -> None:
             conn.execute("ALTER TABLE youtube_uploads ADD COLUMN stats_checked_at TIMESTAMP")
         if "scheduled_publish_at" not in youtube_upload_columns:
             conn.execute("ALTER TABLE youtube_uploads ADD COLUMN scheduled_publish_at TEXT")
+        if "comment_thread_id" not in youtube_upload_columns:
+            conn.execute("ALTER TABLE youtube_uploads ADD COLUMN comment_thread_id TEXT")
+        if "comment_posted_at" not in youtube_upload_columns:
+            conn.execute("ALTER TABLE youtube_uploads ADD COLUMN comment_posted_at TIMESTAMP")
+        if "playlist_id" not in youtube_upload_columns:
+            conn.execute("ALTER TABLE youtube_uploads ADD COLUMN playlist_id TEXT")
+        if "playlist_item_id" not in youtube_upload_columns:
+            conn.execute("ALTER TABLE youtube_uploads ADD COLUMN playlist_item_id TEXT")
+        if "caption_id" not in youtube_upload_columns:
+            conn.execute("ALTER TABLE youtube_uploads ADD COLUMN caption_id TEXT")
+        if "postprocess_error" not in youtube_upload_columns:
+            conn.execute("ALTER TABLE youtube_uploads ADD COLUMN postprocess_error TEXT")
         auto_upload_columns = {
             row[1]
             for row in conn.execute("PRAGMA table_info(auto_upload_jobs)").fetchall()
         }
         if "scheduled_publish_at" not in auto_upload_columns:
             conn.execute("ALTER TABLE auto_upload_jobs ADD COLUMN scheduled_publish_at TEXT")
+        if "naver_upload_id" not in auto_upload_columns:
+            conn.execute("ALTER TABLE auto_upload_jobs ADD COLUMN naver_upload_id INTEGER")
+        healing_columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(healing_longform_jobs)").fetchall()
+        }
+        if "trigger" not in healing_columns:
+            conn.execute(
+                "ALTER TABLE healing_longform_jobs "
+                "ADD COLUMN trigger TEXT NOT NULL DEFAULT 'manual'"
+            )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_telegram_logs_source "
             "ON telegram_logs(source)"
@@ -372,12 +506,20 @@ def init_db(db_path: Path = DB_PATH) -> None:
             "ON youtube_uploads(filename)"
         )
         conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_naver_uploads_filename "
+            "ON naver_uploads(filename)"
+        )
+        conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_auto_upload_jobs_status "
             "ON auto_upload_jobs(status, id)"
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_long_video_jobs_status "
             "ON long_video_jobs(status, id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_healing_longform_jobs_status "
+            "ON healing_longform_jobs(status, id)"
         )
         conn.commit()
 

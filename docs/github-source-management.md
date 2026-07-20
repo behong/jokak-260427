@@ -43,6 +43,7 @@ logs/
 static/media/
 assets/backgrounds/
 assets/bgm/generated/
+assets/bgm/approved/
 vendor/
 ```
 

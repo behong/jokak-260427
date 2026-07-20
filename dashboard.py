@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 from flask import Flask, jsonify, redirect, render_template, request, send_from_directory, session, url_for
 
 from backup import cleanup_backups, create_backup, list_backup_files, storage_summary
-from auto_upload import daily_upload_count, next_peak_publish_at
+from auto_upload import daily_upload_count, mark_stale_short_video_jobs_failed, next_peak_publish_at
 from backgrounds import (
     BACKGROUND_DIR,
     ACTIVE_BACKGROUND_LIMIT,
@@ -25,12 +25,32 @@ from backgrounds import (
     get_background_asset_by_id,
     list_background_collections,
     list_background_assets,
+    list_background_assets_for_collection,
     save_background_asset,
     search_pexels_videos,
     update_background_asset,
 )
-from bgm import random_bgm_asset
-from cleanup_videos import cleanup_candidates, cleanup_uploaded_videos
+from bgm import (
+    APPROVED_BGM_DIR,
+    BGM_DIR,
+    SUPPORTED_BGM_EXTENSIONS,
+    licensed_longform_bgm_assets,
+    random_bgm_asset,
+    register_approved_bgm,
+    set_bgm_asset_enabled,
+)
+from cleanup_videos import cleanup_candidates, cleanup_uploaded_videos, reconcile_missing_output_jobs
+from healing_longform import (
+    create_healing_job,
+    healing_job,
+    list_healing_jobs,
+    mark_interrupted_healing_jobs,
+    run_healing_longform_job,
+)
+from longform_config import config_with_overrides, load_longform_config, save_longform_config
+from longform_scheduler import start_longform_scheduler
+from longform_script import available_themes, generate_longform_script
+from longform_tts import create_longform_voice_preview
 from db import (
     BASE_DIR,
     DB_PATH,
@@ -43,26 +63,44 @@ from db import (
     set_app_setting,
 )
 from render_video import (
+    BODY_BOLD_FONT,
     OUTPUT_DIR,
     RENDER_CRF,
     RENDER_PRESET,
     audit_video_before_upload,
+    ffmpeg_font_path,
     mix_bgm,
     random_background_asset_id,
     render_video,
 )
 from telegram_sync import catch_up_recent_messages_sync
-from tts import DEFAULT_RATE, DEFAULT_VOICE, RATE_OPTIONS, VOICE_OPTIONS, create_elevenlabs_long_narration_audio, create_preview_audio
+from tts import (
+    DEFAULT_RATE,
+    DEFAULT_VOICE,
+    RATE_OPTIONS,
+    SHORT_ELEVENLABS_VOICES,
+    VOICE_OPTIONS,
+    create_elevenlabs_long_narration_audio,
+    create_preview_audio,
+    create_short_elevenlabs_preview,
+    elevenlabs_subscription_usage,
+    short_elevenlabs_model,
+    short_tts_provider,
+)
 from video_pipelines import enabled_sources, pipeline_for_source, pipeline_payload
 from video_script import generate_video_script, split_source
 from youtube_metadata_ai import generate_tags, generate_title
 from youtube_upload import (
     YouTubeUploadError,
+    add_video_to_playlist,
+    find_or_create_playlist,
     get_video_details,
     get_video_statistics,
+    post_top_level_comment,
     sanitize_youtube_metadata,
     save_youtube_token_from_response,
     update_video_metadata,
+    upload_korean_caption,
     upload_video,
     youtube_authorization_url,
     youtube_config_status,
@@ -87,6 +125,7 @@ BRAND_NAME = "지혜로운 조각들"
 MANUAL_SOURCE = "직접입력"
 TELEGRAM_REFRESH_LOCK = threading.Lock()
 LONG_VIDEO_LOCK = threading.Lock()
+YOUTUBE_POSTPROCESS_LOCK = threading.Lock()
 LONG_VIDEO_WIDTH = 1920
 LONG_VIDEO_HEIGHT = 1080
 LONG_VIDEO_TARGET_SECONDS = 600
@@ -106,6 +145,10 @@ SETTINGS_KEYS = {
     "TELEGRAM_CATCH_UP_LIMIT",
     "TELEGRAM_CATCH_UP_INTERVAL_SECONDS",
     "PEXELS_API_KEY",
+    "ELEVENLABS_API_KEY",
+    "ELEVENLABS_VOICE_ID",
+    "SHORT_TTS_PROVIDER",
+    "SHORT_ELEVENLABS_MODEL_ID",
     "DASHBOARD_PASSWORD",
     "DASHBOARD_SECRET_KEY",
     "YOUTUBE_CLIENT_SECRET_JSON",
@@ -121,6 +164,8 @@ SETTINGS_KEYS = {
     "AUTO_UPLOAD_PRIVACY_STATUS",
     "AUTO_UPLOAD_SCHEDULE_WINDOWS",
     "AUTO_UPLOAD_SCHEDULE_TIMES",
+    "LONGFORM_UPLOAD_SCHEDULE_TIMES",
+    "LONGFORM_YOUTUBE_PLAYLIST_NAME",
     "AUTO_UPLOAD_MIN_LEAD_MINUTES",
     "AUTO_UPLOAD_MIN_CONTENT_LENGTH",
     "AUTO_UPLOAD_INCLUDE_EXISTING",
@@ -131,14 +176,26 @@ SETTINGS_KEYS = {
     "SARAMRO_QUOTES_IMPORT_LIMIT",
     "SARAMRO_QUOTES_MAX_PAGES",
     "VIDEO_BGM_ENABLED",
+    "VIDEO_BGM_ALLOW_UNVERIFIED",
     "VIDEO_BGM_TTS_VOLUME",
     "VIDEO_BGM_ONLY_VOLUME",
     "VIDEO_CLEANUP_ENABLED",
     "VIDEO_CLEANUP_RETENTION_DAYS",
+    "NAVER_CLIP_AUTO_UPLOAD_ENABLED",
+    "NAVER_CLIP_DAILY_LIMIT",
+    "NAVER_CLIP_SCHEDULE_WINDOW",
+    "NAVER_CLIP_API_URL",
+    "NAVER_CLIP_CHANNEL_URL",
+    "NAVER_CLIP_HOST_VIDEO_ROOT",
+    "NAVER_CLIP_CATEGORY1",
+    "NAVER_CLIP_CATEGORY2",
+    "NAVER_CLIP_KEEP_OPEN_SECONDS",
+    "NAVER_CLIP_TIMEOUT_SECONDS",
 }
 SECRET_KEYS = {
     "TELEGRAM_API_HASH",
     "PEXELS_API_KEY",
+    "ELEVENLABS_API_KEY",
     "DASHBOARD_PASSWORD",
     "DASHBOARD_SECRET_KEY",
     "YOUTUBE_CLIENT_SECRET_JSON",
@@ -155,6 +212,8 @@ BGM_SETTING_DEFAULTS = {
     "AUTO_UPLOAD_PRIVACY_STATUS": "private",
     "AUTO_UPLOAD_SCHEDULE_WINDOWS": "07:00-08:00,19:00-20:00",
     "AUTO_UPLOAD_SCHEDULE_TIMES": "07:00,07:30,19:00,19:30",
+    "LONGFORM_UPLOAD_SCHEDULE_TIMES": "20:30,21:00",
+    "LONGFORM_YOUTUBE_PLAYLIST_NAME": "잠들기 전 듣는 힐링 낭독",
     "AUTO_UPLOAD_MIN_LEAD_MINUTES": "30",
     "AUTO_UPLOAD_MIN_CONTENT_LENGTH": "10",
     "AUTO_UPLOAD_INCLUDE_EXISTING": "0",
@@ -165,10 +224,23 @@ BGM_SETTING_DEFAULTS = {
     "SARAMRO_QUOTES_IMPORT_LIMIT": "10",
     "SARAMRO_QUOTES_MAX_PAGES": "5",
     "VIDEO_BGM_ENABLED": "1",
+    "VIDEO_BGM_ALLOW_UNVERIFIED": "0",
     "VIDEO_BGM_TTS_VOLUME": "0.10",
     "VIDEO_BGM_ONLY_VOLUME": "0.14",
+    "SHORT_TTS_PROVIDER": "elevenlabs",
+    "SHORT_ELEVENLABS_MODEL_ID": "eleven_flash_v2_5",
     "VIDEO_CLEANUP_ENABLED": "1",
-    "VIDEO_CLEANUP_RETENTION_DAYS": "14",
+    "VIDEO_CLEANUP_RETENTION_DAYS": "7",
+    "NAVER_CLIP_AUTO_UPLOAD_ENABLED": "0",
+    "NAVER_CLIP_DAILY_LIMIT": "4",
+    "NAVER_CLIP_SCHEDULE_WINDOW": "06:00-09:00",
+    "NAVER_CLIP_API_URL": "http://host.docker.internal:8383/upload_clip",
+    "NAVER_CLIP_CHANNEL_URL": "https://creator.tv.naver.com/channel/wisearchive/content/video",
+    "NAVER_CLIP_HOST_VIDEO_ROOT": "",
+    "NAVER_CLIP_CATEGORY1": "인문, 교양",
+    "NAVER_CLIP_CATEGORY2": "인문, 교양",
+    "NAVER_CLIP_KEEP_OPEN_SECONDS": "8",
+    "NAVER_CLIP_TIMEOUT_SECONDS": "900",
 }
 
 
@@ -591,6 +663,9 @@ def index():
         db_path=DB_PATH,
         sources=sources,
         voice_options=VOICE_OPTIONS,
+        short_tts_provider=short_tts_provider(),
+        short_elevenlabs_model=short_elevenlabs_model(),
+        short_elevenlabs_voices=SHORT_ELEVENLABS_VOICES,
         auth_enabled=auth_enabled(),
     )
 
@@ -634,6 +709,17 @@ def long_videos_page():
     init_db(DB_PATH)
     return render_template(
         "long_videos.html",
+        db_path=DB_PATH,
+        auth_enabled=auth_enabled(),
+    )
+
+
+@app.get("/longform-backgrounds")
+@require_auth
+def longform_backgrounds_page():
+    init_db(DB_PATH)
+    return render_template(
+        "longform_backgrounds.html",
         db_path=DB_PATH,
         auth_enabled=auth_enabled(),
     )
@@ -756,7 +842,7 @@ def api_storage():
 
 def video_cleanup_payload(retention_days: int | None = None) -> dict[str, object]:
     retention_days = (
-        setting_int("VIDEO_CLEANUP_RETENTION_DAYS", 14, minimum=1, maximum=365)
+        setting_int("VIDEO_CLEANUP_RETENTION_DAYS", 7, minimum=1, maximum=365)
         if retention_days is None
         else max(1, min(365, int(retention_days)))
     )
@@ -798,7 +884,7 @@ def api_video_cleanup_status():
 @require_auth
 def api_video_cleanup_run():
     payload = request.get_json(silent=True) or {}
-    retention_days = int(payload.get("retention_days") or setting_int("VIDEO_CLEANUP_RETENTION_DAYS", 14, minimum=1, maximum=365))
+    retention_days = int(payload.get("retention_days") or setting_int("VIDEO_CLEANUP_RETENTION_DAYS", 7, minimum=1, maximum=365))
     retention_days = max(1, min(365, retention_days))
     set_setting_value("VIDEO_CLEANUP_RETENTION_DAYS", str(retention_days))
     set_setting_value("VIDEO_CLEANUP_ENABLED", "1")
@@ -966,6 +1052,16 @@ def latest_video_for_log(log_id: int) -> dict[str, object] | None:
 
 def video_job_payload(row: dict[str, object]) -> dict[str, object]:
     payload = dict(row)
+    voice_id = str(payload.get("tts_voice") or "")
+    selected_voice = next(
+        (voice for voice in SHORT_ELEVENLABS_VOICES if voice["voice_id"] == voice_id),
+        None,
+    )
+    if selected_voice:
+        payload["tts_voice_name"] = selected_voice["name"]
+        payload["tts_voice_gender"] = selected_voice["gender"]
+        payload["tts_provider"] = "elevenlabs"
+        payload["tts_model"] = short_elevenlabs_model()
     output_path = payload.get("output_path")
     if output_path:
         path = Path(str(output_path))
@@ -996,15 +1092,22 @@ def generated_video_payload(
     path: Path,
     job: dict[str, object] | None = None,
     long_job: dict[str, object] | None = None,
+    healing_job: dict[str, object] | None = None,
 ) -> dict[str, object]:
     stat = path.stat()
     match = VIDEO_FILENAME_PATTERN.match(path.name)
     log_id = int(match.group("log_id")) if match else None
-    is_long_video = path.name.startswith("long-wisdom-library-")
+    relative_name = path.resolve().relative_to(OUTPUT_DIR.resolve()).as_posix()
+    is_long_video = bool(
+        long_job
+        or healing_job
+        or path.name.startswith("long-wisdom-library-")
+        or relative_name.startswith("longform/")
+    )
     inferred_title = inferred_title_for_log(log_id) if not is_long_video else None
     payload: dict[str, object] = {
-        "filename": path.name,
-        "video_url": f"/videos/{path.name}",
+        "filename": relative_name,
+        "video_url": f"/videos/{relative_name}",
         "size": stat.st_size,
         "modified_at": stat.st_mtime,
         "log_id": log_id,
@@ -1042,6 +1145,23 @@ def generated_video_payload(
                 "source_count": long_job.get("source_count"),
             }
         )
+    if healing_job:
+        try:
+            metadata = json.loads(str(healing_job.get("metadata_json") or "{}"))
+        except json.JSONDecodeError:
+            metadata = {}
+        payload.update(
+            {
+                "id": healing_job.get("id"),
+                "status": healing_job.get("status"),
+                "title": metadata.get("title") or healing_job.get("theme"),
+                "created_at": healing_job.get("created_at"),
+                "stage": healing_job.get("stage"),
+                "progress": healing_job.get("progress"),
+                "updated_at": healing_job.get("updated_at"),
+                "source": "healing_longform_job",
+            }
+        )
     return payload
 
 
@@ -1053,6 +1173,7 @@ def list_generated_videos(
     init_db(DB_PATH)
     jobs_by_name: dict[str, dict[str, object]] = {}
     long_jobs_by_name: dict[str, dict[str, object]] = {}
+    healing_jobs_by_name: dict[str, dict[str, object]] = {}
     with closing(connect(DB_PATH)) as conn:
         for row in conn.execute(
             """
@@ -1082,6 +1203,23 @@ def list_generated_videos(
             filename = Path(str(job.get("output_path") or "")).name
             if filename:
                 long_jobs_by_name[filename] = job
+        for row in conn.execute(
+            """
+            SELECT id, status, output_path, theme, metadata_json,
+                   stage, progress, error, created_at, updated_at
+            FROM healing_longform_jobs
+            WHERE status = 'ready' AND output_path IS NOT NULL
+            ORDER BY id DESC
+            LIMIT 200
+            """
+        ):
+            job = dict(row)
+            output_path = Path(str(job.get("output_path") or ""))
+            try:
+                relative_name = (BASE_DIR / output_path).resolve().relative_to(OUTPUT_DIR.resolve()).as_posix()
+            except ValueError:
+                continue
+            healing_jobs_by_name[relative_name] = job
 
     videos: list[dict[str, object]] = []
     for path in OUTPUT_DIR.glob("*.mp4"):
@@ -1093,6 +1231,14 @@ def list_generated_videos(
                     long_jobs_by_name.get(path.name),
                 )
             )
+        except FileNotFoundError:
+            continue
+    for relative_name, healing_job in healing_jobs_by_name.items():
+        path = OUTPUT_DIR / relative_name
+        if not path.is_file() or path.stat().st_size <= 0:
+            continue
+        try:
+            videos.append(generated_video_payload(path, healing_job=healing_job))
         except FileNotFoundError:
             continue
 
@@ -1493,7 +1639,7 @@ def long_video_caption_filter(
 ) -> str:
     if not events:
         return f"[{input_label}]null[{output_label}]"
-    font_file = "C\\:/Windows/Fonts/NanumMyeongjoBold.ttf"
+    font_file = ffmpeg_font_path(BODY_BOLD_FONT)
     filters: list[str] = []
     for start, end, lines in events:
         y_positions = ["h*0.70-text_h", "h*0.70+58"]
@@ -1829,7 +1975,8 @@ def run_video_render_job(
                 """
                 UPDATE video_jobs
                 SET status = ?, stage = ?, progress = ?, output_path = ?, title = ?, bgm_asset_id = ?,
-                    background_asset_ids = ?, error = NULL, updated_at = CURRENT_TIMESTAMP
+                    background_asset_ids = ?, tts_voice = ?, tts_rate = ?,
+                    error = NULL, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
                 (
@@ -1840,6 +1987,8 @@ def run_video_render_job(
                     str(script["title"]),
                     script.get("bgm_asset_id"),
                     json.dumps(script.get("background_asset_ids") or []),
+                    script.get("tts_voice"),
+                    script.get("tts_rate") or tts_rate,
                     job_id,
                 ),
             )
@@ -1888,11 +2037,64 @@ def youtube_title(script: dict[str, object], quote_text: str = "") -> str:
     return f"{title}{suffix}"
 
 
+def output_video_path(filename: str, *, must_exist: bool = True) -> Path:
+    path = (OUTPUT_DIR / filename).resolve()
+    try:
+        path.relative_to(OUTPUT_DIR.resolve())
+    except ValueError as exc:
+        raise FileNotFoundError(filename) from exc
+    if path.suffix.lower() != ".mp4" or (must_exist and not path.is_file()):
+        raise FileNotFoundError(filename)
+    return path
+
+
 def youtube_metadata_for_video(filename: str) -> dict[str, object]:
     init_db(DB_PATH)
-    path = (OUTPUT_DIR / filename).resolve()
-    if path.parent != OUTPUT_DIR.resolve() or not path.exists():
-        raise FileNotFoundError(filename)
+    output_video_path(filename)
+
+    relative_output = (Path("outputs") / Path(filename)).as_posix()
+    with closing(connect(DB_PATH)) as conn:
+        healing_row = conn.execute(
+            """
+            SELECT metadata_json, theme
+            FROM healing_longform_jobs
+            WHERE output_path = ? AND status = 'ready'
+            ORDER BY id DESC LIMIT 1
+            """,
+            (relative_output,),
+        ).fetchone()
+    if healing_row:
+        try:
+            longform_metadata = json.loads(str(healing_row["metadata_json"] or "{}"))
+        except json.JSONDecodeError:
+            longform_metadata = {}
+        longform_tags = longform_metadata.get("tags")
+        if not isinstance(longform_tags, list) or not longform_tags:
+            longform_tags = [
+                BRAND_NAME,
+                "힐링낭독",
+                "마음위로",
+                "긴영상",
+                *longform_metadata.get("hashtags", []),
+            ]
+        title, description, tags = sanitize_youtube_metadata(
+            str(longform_metadata.get("title") or healing_row["theme"] or "힐링 롱폼"),
+            str(longform_metadata.get("description") or "천천히 듣는 힐링 롱폼 영상입니다."),
+            [str(tag) for tag in longform_tags],
+        )
+        title_options = []
+        for candidate in longform_metadata.get("title_options") or [title]:
+            clean_title, _, _ = sanitize_youtube_metadata(str(candidate), description, tags)
+            if clean_title not in title_options:
+                title_options.append(clean_title)
+        return {
+            "filename": filename,
+            "title": title,
+            "title_options": title_options[:3],
+            "description": description,
+            "tags": tags,
+            "hashtags": [f"#{str(tag).lstrip('#')}" for tag in longform_metadata.get("hashtags", [])],
+        }
 
     if filename.startswith("long-wisdom-library-"):
         job = long_video_job_by_filename(filename)
@@ -1981,6 +2183,52 @@ def random_scheduled_publish_at(now: datetime | None = None) -> datetime:
     return next_peak_publish_at(now)
 
 
+def longform_schedule_times() -> list[time]:
+    raw = get_app_setting("LONGFORM_UPLOAD_SCHEDULE_TIMES", "20:30,21:00")
+    values: list[time] = []
+    for item in raw.split(","):
+        try:
+            hour, minute = (int(part.strip()) for part in item.split(":", 1))
+            candidate = time(hour, minute)
+        except (TypeError, ValueError):
+            continue
+        if candidate not in values:
+            values.append(candidate)
+    return sorted(values) or [time(20, 30), time(21, 0)]
+
+
+def next_longform_publish_at(now: datetime | None = None) -> datetime:
+    now_kst = (now or datetime.now(KST)).astimezone(KST)
+    first_date = now_kst.date() + timedelta(days=1)
+    with closing(connect(DB_PATH)) as conn:
+        for day_offset in range(31):
+            candidate_date = first_date + timedelta(days=day_offset)
+            rows = conn.execute(
+                """
+                SELECT scheduled_publish_at
+                FROM youtube_uploads
+                WHERE scheduled_publish_at LIKE ?
+                  AND status NOT IN ('failed', 'deleted')
+                """,
+                (f"{candidate_date.isoformat()}T%",),
+            ).fetchall()
+            occupied = {
+                str(row["scheduled_publish_at"] or "")[:16]
+                for row in rows
+                if row["scheduled_publish_at"]
+            }
+            for slot in longform_schedule_times():
+                candidate = datetime.combine(candidate_date, slot, tzinfo=KST)
+                if candidate.isoformat(timespec="minutes")[:16] not in occupied:
+                    return candidate
+    raise RuntimeError("31일 이내에 사용할 수 있는 롱폼 예약 시간이 없습니다.")
+
+
+def is_longform_video(filename: str) -> bool:
+    normalized = filename.replace("\\", "/")
+    return normalized.startswith("longform/") or Path(normalized).name.startswith("long-wisdom-library-")
+
+
 def scheduled_publish_payload(publish_at: datetime | None) -> dict[str, str] | None:
     if not publish_at:
         return None
@@ -1997,6 +2245,8 @@ def latest_youtube_upload(filename: str) -> dict[str, object] | None:
             SELECT id, filename, video_job_id, log_id, youtube_video_id, youtube_url,
                    title, privacy_status, status, error, view_count, like_count,
                    comment_count, stats_checked_at, scheduled_publish_at,
+                   comment_thread_id, comment_posted_at, playlist_id, playlist_item_id,
+                   caption_id, postprocess_error,
                    created_at, updated_at
             FROM youtube_uploads
             WHERE filename = ?
@@ -2015,6 +2265,8 @@ def latest_successful_youtube_upload(filename: str) -> dict[str, object] | None:
             SELECT id, filename, video_job_id, log_id, youtube_video_id, youtube_url,
                    title, privacy_status, status, error, view_count, like_count,
                    comment_count, stats_checked_at, scheduled_publish_at,
+                   comment_thread_id, comment_posted_at, playlist_id, playlist_item_id,
+                   caption_id, postprocess_error,
                    created_at, updated_at
             FROM youtube_uploads
             WHERE filename = ? AND status = ? AND youtube_url IS NOT NULL
@@ -2033,6 +2285,8 @@ def active_youtube_upload(filename: str) -> dict[str, object] | None:
             SELECT id, filename, video_job_id, log_id, youtube_video_id, youtube_url,
                    title, privacy_status, status, error, view_count, like_count,
                    comment_count, stats_checked_at, scheduled_publish_at,
+                   comment_thread_id, comment_posted_at, playlist_id, playlist_item_id,
+                   caption_id, postprocess_error,
                    created_at, updated_at
             FROM youtube_uploads
             WHERE filename = ? AND status = ?
@@ -2049,14 +2303,15 @@ def create_youtube_upload_row(
     filename: str,
     metadata: dict[str, object],
     privacy_status: str,
+    scheduled_publish_at: datetime | None = None,
 ) -> int:
     job = video_job_by_filename(filename)
     with closing(connect(DB_PATH)) as conn:
         cursor = conn.execute(
             """
             INSERT INTO youtube_uploads
-                (filename, video_job_id, log_id, title, privacy_status, status)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (filename, video_job_id, log_id, title, privacy_status, status, scheduled_publish_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 filename,
@@ -2065,6 +2320,7 @@ def create_youtube_upload_row(
                 metadata.get("title"),
                 privacy_status,
                 "uploading",
+                scheduled_publish_payload(scheduled_publish_at)["kst"] if scheduled_publish_at else None,
             ),
         )
         conn.commit()
@@ -2093,6 +2349,177 @@ def update_youtube_upload_success(
             ),
         )
         conn.commit()
+
+
+LONGFORM_COMMENT_TEXT = """오늘도 정말 수고 많으셨습니다.
+
+이번 낭독에서 마음에 남은 문장이 있었나요?
+다음 영상에서 듣고 싶은 위로의 주제도 댓글로 남겨주세요.
+
+여러분의 댓글을 다음 낭독 제작에 참고하겠습니다."""
+
+
+def longform_subtitle_path(filename: str) -> Path | None:
+    relative_output = (Path("outputs") / Path(filename)).as_posix()
+    with closing(connect(DB_PATH)) as conn:
+        row = conn.execute(
+            """
+            SELECT script_path
+            FROM healing_longform_jobs
+            WHERE output_path = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (relative_output,),
+        ).fetchone()
+    if not row or not row["script_path"]:
+        return None
+    path = (BASE_DIR / str(row["script_path"])).parent / "subtitles.srt"
+    return path if path.is_file() else None
+
+
+def update_youtube_upload_postprocess(upload_id: int, **values: object) -> None:
+    allowed = {"playlist_id", "playlist_item_id", "caption_id", "postprocess_error"}
+    fields = [key for key in values if key in allowed]
+    if not fields:
+        return
+    assignments = ", ".join(f"{field} = ?" for field in fields)
+    with closing(connect(DB_PATH)) as conn:
+        conn.execute(
+            f"""
+            UPDATE youtube_uploads
+            SET {assignments}, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (*[values[field] for field in fields], upload_id),
+        )
+        conn.commit()
+
+
+def youtube_upload_postprocess_state(upload_id: int) -> dict[str, object]:
+    with closing(connect(DB_PATH)) as conn:
+        row = conn.execute(
+            """
+            SELECT playlist_id, playlist_item_id, caption_id, postprocess_error
+            FROM youtube_uploads
+            WHERE id = ?
+            """,
+            (upload_id,),
+        ).fetchone()
+    if not row:
+        raise LookupError(f"youtube upload not found: {upload_id}")
+    return dict(row)
+
+
+def postprocess_longform_upload(upload_id: int, filename: str, video_id: str) -> dict[str, object]:
+    with YOUTUBE_POSTPROCESS_LOCK:
+        state = youtube_upload_postprocess_state(upload_id)
+        completed: dict[str, object] = {
+            key: state.get(key)
+            for key in ("playlist_id", "playlist_item_id", "caption_id")
+            if state.get(key)
+        }
+        updates: dict[str, object] = {}
+        errors: list[str] = []
+
+        if not state.get("playlist_item_id"):
+            try:
+                playlist_id = str(state.get("playlist_id") or "")
+                if not playlist_id:
+                    playlist_name = get_app_setting(
+                        "LONGFORM_YOUTUBE_PLAYLIST_NAME",
+                        "잠들기 전 듣는 힐링 낭독",
+                    ).strip() or "잠들기 전 듣는 힐링 낭독"
+                    playlist_id = find_or_create_playlist(playlist_name)
+                playlist_item_id = add_video_to_playlist(playlist_id, video_id)
+                updates.update(playlist_id=playlist_id, playlist_item_id=playlist_item_id)
+                completed.update(playlist_id=playlist_id, playlist_item_id=playlist_item_id)
+            except Exception as exc:
+                errors.append(f"playlist: {exc}")
+
+        if not state.get("caption_id"):
+            subtitle_path = longform_subtitle_path(filename)
+            if subtitle_path:
+                try:
+                    caption_id = upload_korean_caption(video_id, subtitle_path)
+                    updates["caption_id"] = caption_id
+                    completed["caption_id"] = caption_id
+                except Exception as exc:
+                    errors.append(f"caption: {exc}")
+            else:
+                errors.append("caption: subtitles.srt not found")
+
+        updates["postprocess_error"] = " | ".join(errors)[:2000] if errors else None
+        update_youtube_upload_postprocess(upload_id, **updates)
+        return {"upload_id": upload_id, **completed, "postprocess_error": updates["postprocess_error"]}
+
+
+def process_pending_longform_uploads(limit: int = 5) -> list[dict[str, object]]:
+    init_db(DB_PATH)
+    with closing(connect(DB_PATH)) as conn:
+        rows = conn.execute(
+            """
+            SELECT id, filename, youtube_video_id
+            FROM youtube_uploads
+            WHERE status = 'uploaded'
+              AND filename LIKE 'longform/%'
+              AND youtube_video_id IS NOT NULL
+              AND (playlist_item_id IS NULL OR caption_id IS NULL)
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (max(1, min(limit, 20)),),
+        ).fetchall()
+    return [
+        postprocess_longform_upload(int(row["id"]), str(row["filename"]), str(row["youtube_video_id"]))
+        for row in rows
+    ]
+
+
+def post_due_longform_comments(limit: int = 5) -> list[dict[str, object]]:
+    init_db(DB_PATH)
+    with closing(connect(DB_PATH)) as conn:
+        rows = conn.execute(
+            """
+            SELECT id, youtube_video_id
+            FROM youtube_uploads
+            WHERE status = 'uploaded'
+              AND filename LIKE 'longform/%'
+              AND youtube_video_id IS NOT NULL
+              AND comment_thread_id IS NULL
+              AND datetime(created_at) >= datetime('now', '-14 days')
+              AND (
+                    (scheduled_publish_at IS NOT NULL
+                     AND datetime(scheduled_publish_at) <= datetime('now', '-5 minutes'))
+                    OR (scheduled_publish_at IS NULL AND privacy_status = 'public')
+                  )
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (max(1, min(limit, 20)),),
+        ).fetchall()
+    posted: list[dict[str, object]] = []
+    for row in rows:
+        try:
+            response = post_top_level_comment(str(row["youtube_video_id"]), LONGFORM_COMMENT_TEXT)
+        except Exception:
+            continue
+        thread_id = str(response.get("id") or "")
+        if not thread_id:
+            continue
+        with closing(connect(DB_PATH)) as conn:
+            conn.execute(
+                """
+                UPDATE youtube_uploads
+                SET comment_thread_id = ?, comment_posted_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (thread_id, row["id"]),
+            )
+            conn.commit()
+        posted.append({"upload_id": int(row["id"]), "comment_thread_id": thread_id})
+    return posted
 
 
 def update_youtube_upload_failure(upload_id: int, error: str) -> None:
@@ -2138,11 +2565,15 @@ def run_youtube_upload_job(
             list(metadata.get("tags") or []),
             privacy_status,
             publish_at=scheduled_publish_at,
+            contains_synthetic_media=True,
         )
     except Exception as exc:
         update_youtube_upload_failure(upload_id, str(exc))
         return
     update_youtube_upload_success(upload_id, result, scheduled_publish_at)
+    filename = path.resolve().relative_to(OUTPUT_DIR.resolve()).as_posix()
+    if is_longform_video(filename):
+        postprocess_longform_upload(upload_id, filename, str(result["youtube_video_id"]))
 
 
 def update_youtube_upload_metadata(upload_id: int, title: str, privacy_status: str) -> None:
@@ -2158,23 +2589,43 @@ def update_youtube_upload_metadata(upload_id: int, title: str, privacy_status: s
         conn.commit()
 
 
-def refresh_youtube_upload_stats(limit: int = 50) -> dict[str, object]:
-    init_db(DB_PATH)
+def youtube_stats_due_uploads(limit: int = 50) -> list[dict[str, object]]:
     with closing(connect(DB_PATH)) as conn:
         rows = conn.execute(
             """
             SELECT id, youtube_video_id
             FROM youtube_uploads
-            WHERE status = ?
+            WHERE status = 'uploaded'
               AND youtube_video_id IS NOT NULL
-              AND view_count IS NULL
-              AND datetime(created_at) <= datetime('now', '-24 hours')
-              AND datetime(created_at) >= datetime('now', '-72 hours')
-            ORDER BY created_at ASC
+              AND (
+                    (scheduled_publish_at IS NOT NULL
+                     AND datetime(scheduled_publish_at) <= datetime('now', '-24 hours')
+                     AND datetime(scheduled_publish_at) >= datetime('now', '-72 hours'))
+                    OR
+                    (scheduled_publish_at IS NULL
+                     AND privacy_status = 'public'
+                     AND datetime(created_at) <= datetime('now', '-24 hours')
+                     AND datetime(created_at) >= datetime('now', '-72 hours'))
+                  )
+              AND (
+                    view_count IS NULL
+                    OR stats_checked_at IS NULL
+                    OR (scheduled_publish_at IS NOT NULL
+                        AND datetime(stats_checked_at) < datetime(scheduled_publish_at, '+24 hours'))
+                  )
+            ORDER BY COALESCE(scheduled_publish_at, created_at) ASC
             LIMIT ?
             """,
-            ("uploaded", limit),
+            (max(1, min(limit, 100)),),
         ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def refresh_youtube_upload_stats(limit: int = 50) -> dict[str, object]:
+    init_db(DB_PATH)
+    longform_postprocessed = process_pending_longform_uploads()
+    comments_posted = post_due_longform_comments()
+    rows = youtube_stats_due_uploads(limit)
 
     updated: list[dict[str, object]] = []
     errors: list[dict[str, object]] = []
@@ -2202,7 +2653,13 @@ def refresh_youtube_upload_stats(limit: int = 50) -> dict[str, object]:
             )
             conn.commit()
         updated.append({"id": row["id"], **stats})
-    return {"checked": len(rows), "updated": updated, "errors": errors}
+    return {
+        "checked": len(rows),
+        "updated": updated,
+        "errors": errors,
+        "longform_postprocessed": longform_postprocessed,
+        "comments_posted": comments_posted,
+    }
 
 
 def youtube_performance_patterns(limit: int = 10) -> list[dict[str, object]]:
@@ -2283,6 +2740,7 @@ def tts_rate_from_payload(value: object) -> str:
 @require_auth
 def api_render_video(log_id: int):
     init_db(DB_PATH)
+    mark_stale_short_video_jobs_failed()
     running_job = active_video_job(log_id)
     if running_job:
         return jsonify({"job": video_job_payload(running_job), "already_running": True}), 409
@@ -2310,10 +2768,11 @@ def api_render_video(log_id: int):
     with closing(connect(DB_PATH)) as conn:
         cursor = conn.execute(
             """
-            INSERT INTO video_jobs (log_id, background_asset_id, status, stage, progress)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO video_jobs
+                (log_id, background_asset_id, tts_voice, tts_rate, status, stage, progress)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (log_id, background_asset_id, "rendering", "대기 중", 0),
+            (log_id, background_asset_id, tts_voice, tts_rate, "rendering", "대기 중", 0),
         )
         job_id = cursor.lastrowid
         conn.commit()
@@ -2344,7 +2803,16 @@ def api_tts_preview():
     voice = str(payload.get("voice") or DEFAULT_VOICE)
     rate = tts_rate_from_payload(payload.get("rate"))
     try:
-        output, duration, used_voice = create_preview_audio(text, voice, rate)
+        provider = short_tts_provider()
+        if provider == "elevenlabs":
+            output, duration, selected_voice = create_short_elevenlabs_preview(text)
+            used_voice = str(selected_voice["name"])
+            voice_id = str(selected_voice["voice_id"])
+            model_id = str(selected_voice["model_id"])
+        else:
+            output, duration, used_voice = create_preview_audio(text, voice, rate)
+            voice_id = used_voice
+            model_id = "edge-tts"
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
     return jsonify(
@@ -2352,8 +2820,11 @@ def api_tts_preview():
             "audio_url": f"/audio/{output.resolve().relative_to(BASE_DIR).as_posix().removeprefix('outputs/audio/')}",
             "duration": duration,
             "voice": used_voice,
+            "voice_id": voice_id,
             "requested_voice": voice,
             "rate": rate,
+            "provider": provider,
+            "model_id": model_id,
         }
     )
 
@@ -2475,11 +2946,342 @@ def api_long_video_job(job_id: int):
     return jsonify({"job": job})
 
 
+def healing_job_payload(job: dict[str, object]) -> dict[str, object]:
+    payload = dict(job)
+    output_path = str(payload.get("output_path") or "")
+    payload["video_url"] = f"/videos/{output_path.removeprefix('outputs/')}" if output_path else None
+    try:
+        payload["metadata"] = json.loads(str(payload.get("metadata_json") or "{}"))
+    except json.JSONDecodeError:
+        payload["metadata"] = {}
+    payload.pop("config_json", None)
+    payload.pop("metadata_json", None)
+    return payload
+
+
+@app.get("/api/healing-longform/config")
+@require_auth
+def api_healing_longform_config():
+    elevenlabs_key = str(get_app_setting("ELEVENLABS_API_KEY", os.getenv("ELEVENLABS_API_KEY", "")) or "").strip()
+    config = load_longform_config()
+    elevenlabs = config["longform"]["tts"].get("elevenlabs") or {}
+    if not str(elevenlabs.get("voice_id") or "").strip():
+        elevenlabs["voice_id"] = str(
+            get_app_setting("ELEVENLABS_VOICE_ID", os.getenv("ELEVENLABS_VOICE_ID", "")) or ""
+        ).strip()
+    return jsonify({
+        "config": config,
+        "themes": available_themes(),
+        "voices": VOICE_OPTIONS,
+        "providers": {"edge": "Microsoft Edge 무료", "elevenlabs": "ElevenLabs"},
+        "elevenlabs_configured": bool(elevenlabs_key),
+    })
+
+
+def licensed_bgm_payload(asset: dict[str, object]) -> dict[str, object]:
+    payload = dict(asset)
+    local_path = Path(str(payload.get("local_path") or ""))
+    try:
+        relative = (BASE_DIR / local_path).resolve().relative_to(BGM_DIR.resolve()).as_posix()
+    except ValueError:
+        payload["audio_url"] = None
+    else:
+        payload["audio_url"] = f"/bgm/{relative}"
+    return payload
+
+
+@app.get("/api/healing-longform/music")
+@require_auth
+def api_healing_longform_music():
+    assets = [
+        licensed_bgm_payload(asset)
+        for asset in licensed_longform_bgm_assets(include_disabled=True)
+    ]
+    return jsonify({"music": assets})
+
+
+@app.post("/api/healing-longform/music/import")
+@require_auth
+def api_import_healing_longform_music():
+    if request.content_length and request.content_length > 100 * 1024 * 1024:
+        return jsonify({"error": "음원 파일은 100MB 이하여야 합니다."}), 413
+    upload = request.files.get("file")
+    if not upload or not upload.filename:
+        return jsonify({"error": "등록할 음원 파일을 선택해 주세요."}), 400
+    suffix = Path(upload.filename).suffix.lower()
+    if suffix not in SUPPORTED_BGM_EXTENSIONS:
+        return jsonify({"error": "MP3, M4A, AAC, WAV, FLAC, OGG 음원만 등록할 수 있습니다."}), 400
+
+    title = str(request.form.get("title") or Path(upload.filename).stem).strip()
+    license_type = str(request.form.get("license_type") or "youtube_standard").strip()
+    source_url = str(request.form.get("source_url") or "").strip()
+    attribution_text = str(request.form.get("attribution_text") or "").strip()
+    mood = str(request.form.get("mood") or "calm").strip()
+    APPROVED_BGM_DIR.mkdir(parents=True, exist_ok=True)
+    filename = f"licensed-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(4)}{suffix}"
+    output = (APPROVED_BGM_DIR / filename).resolve()
+    if output.parent != APPROVED_BGM_DIR.resolve():
+        return jsonify({"error": "안전하지 않은 파일 경로입니다."}), 400
+    upload.save(output)
+    try:
+        if output.stat().st_size <= 0:
+            raise ValueError("비어 있는 음원 파일입니다.")
+        asset = register_approved_bgm(
+            output,
+            title=title,
+            license_type=license_type,
+            source_url=source_url,
+            attribution_text=attribution_text,
+            mood=mood,
+        )
+    except (OSError, ValueError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:
+        output.unlink(missing_ok=True)
+        return jsonify({"error": str(exc) or "음원을 확인할 수 없습니다."}), 400
+    return jsonify({"music": licensed_bgm_payload(asset)}), 201
+
+
+@app.patch("/api/healing-longform/music/<int:asset_id>")
+@require_auth
+def api_update_healing_longform_music(asset_id: int):
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload.get("enabled"), bool):
+        return jsonify({"error": "enabled 값은 true 또는 false여야 합니다."}), 400
+    asset = set_bgm_asset_enabled(asset_id, payload["enabled"])
+    if not asset:
+        return jsonify({"error": "등록된 승인 음원을 찾을 수 없습니다."}), 404
+    return jsonify({"music": licensed_bgm_payload(asset)})
+
+
+@app.put("/api/healing-longform/config")
+@require_auth
+def api_update_healing_longform_config():
+    payload = request.get_json(silent=True) or {}
+    overrides = payload.get("longform") if isinstance(payload.get("longform"), dict) else payload
+    config = save_longform_config(config_with_overrides(load_longform_config(), overrides))
+    return jsonify({"config": config})
+
+
+@app.get("/api/healing-longform/elevenlabs-usage")
+@require_auth
+def api_healing_longform_elevenlabs_usage():
+    return jsonify({"usage": elevenlabs_subscription_usage()})
+
+
+@app.post("/api/healing-longform/script-preview")
+@require_auth
+def api_healing_longform_script_preview():
+    payload = request.get_json(silent=True) or {}
+    config = config_with_overrides(load_longform_config(), payload)
+    root = config["longform"]
+    script = generate_longform_script(
+        str(root["script"].get("theme") or "오늘도 애쓴 당신에게"),
+        int(root["duration_minutes"]),
+        str(root["script"].get("tone") or "calm"),
+        root["tts"],
+    )
+    return jsonify({"script": script})
+
+
+@app.post("/api/healing-longform/voice-preview")
+@require_auth
+def api_healing_longform_voice_preview():
+    payload = request.get_json(silent=True) or {}
+    config = config_with_overrides(load_longform_config(), payload)
+    root = config["longform"]
+    tts_config = dict(root["tts"])
+    preview_voice = str(payload.get("preview_voice") or "").strip()
+    provider = str(tts_config.get("provider") or "edge")
+    if provider == "elevenlabs" and preview_voice:
+        elevenlabs = dict(tts_config.get("elevenlabs") or {})
+        saved_voice_ids = {str(item).strip() for item in (elevenlabs.get("saved_voices") or {}).values()}
+        if preview_voice not in saved_voice_ids:
+            return jsonify({"error": "등록되지 않은 ElevenLabs 음성입니다."}), 400
+        elevenlabs["voice_id"] = preview_voice
+        tts_config["elevenlabs"] = elevenlabs
+    elif provider == "edge" and preview_voice:
+        if preview_voice not in VOICE_OPTIONS or preview_voice == "random":
+            return jsonify({"error": "지원하지 않는 Edge 음성입니다."}), 400
+        tts_config["voice"] = preview_voice
+    if str(tts_config.get("provider") or "edge") == "elevenlabs":
+        key = str(get_app_setting("ELEVENLABS_API_KEY", os.getenv("ELEVENLABS_API_KEY", "")) or "").strip()
+        voice_id = str((tts_config.get("elevenlabs") or {}).get("voice_id") or "").strip()
+        if not key:
+            return jsonify({"error": "ElevenLabs API Key를 운영 설정에 입력해 주세요."}), 400
+        if not voice_id:
+            return jsonify({"error": "ElevenLabs Voice ID를 입력해 주세요."}), 400
+    text = str(payload.get("text") or "오늘도 많이 애쓰셨습니다. 지금은 천천히 마음을 쉬게 해도 괜찮습니다.")
+    voice_label = (
+        str((tts_config.get("elevenlabs") or {}).get("voice_id") or "elevenlabs")
+        if provider == "elevenlabs"
+        else str(tts_config.get("voice") or "edge")
+    )
+    output, duration = create_longform_voice_preview(text, tts_config, voice_label)
+    relative = output.resolve().relative_to(BASE_DIR / "outputs" / "audio").as_posix()
+    return jsonify({
+        "audio_url": f"/audio/{relative}",
+        "duration": duration,
+        "voice": (
+            (tts_config.get("elevenlabs") or {}).get("voice_id")
+            if tts_config.get("provider") == "elevenlabs"
+            else tts_config.get("voice")
+        ),
+        "provider": provider,
+    })
+
+
+@app.post("/api/healing-longform/create")
+@require_auth
+def api_create_healing_longform():
+    payload = request.get_json(silent=True) or {}
+    config = config_with_overrides(load_longform_config(), payload)
+    if not bool(config["longform"].get("enabled", True)):
+        return jsonify({"error": "longform_disabled"}), 409
+    tts_config = config["longform"]["tts"]
+    if str(tts_config.get("provider") or "edge") == "elevenlabs":
+        key = str(get_app_setting("ELEVENLABS_API_KEY", os.getenv("ELEVENLABS_API_KEY", "")) or "").strip()
+        voice_id = str((tts_config.get("elevenlabs") or {}).get("voice_id") or "").strip()
+        if not key:
+            return jsonify({"error": "ElevenLabs API Key를 운영 설정에 입력해 주세요."}), 400
+        if not voice_id:
+            return jsonify({"error": "ElevenLabs Voice ID를 입력해 주세요."}), 400
+    active = next((item for item in list_healing_jobs(10) if item.get("status") in {"pending", "running"}), None)
+    if active:
+        return jsonify({"error": "longform_already_running", "job": healing_job_payload(active)}), 409
+    job_id = create_healing_job(config)
+    thread = threading.Thread(target=run_healing_longform_job, args=(job_id, config), daemon=True)
+    thread.start()
+    return jsonify({"job": healing_job_payload(healing_job(job_id) or {})}), 202
+
+
+@app.post("/api/healing-longform/sample")
+@require_auth
+def api_create_healing_longform_sample():
+    payload = request.get_json(silent=True) or {}
+    config = config_with_overrides(load_longform_config(), payload)
+    root = config["longform"]
+    if not bool(root.get("enabled", True)):
+        return jsonify({"error": "longform_disabled"}), 409
+    tts_config = root["tts"]
+    if str(tts_config.get("provider") or "edge") == "elevenlabs":
+        key = str(get_app_setting("ELEVENLABS_API_KEY", os.getenv("ELEVENLABS_API_KEY", "")) or "").strip()
+        voice_id = str((tts_config.get("elevenlabs") or {}).get("voice_id") or "").strip()
+        if not key:
+            return jsonify({"error": "ElevenLabs API Key를 운영 설정에 입력해 주세요."}), 400
+        if not voice_id:
+            return jsonify({"error": "ElevenLabs Voice ID를 입력해 주세요."}), 400
+    active = next((item for item in list_healing_jobs(10) if item.get("status") in {"pending", "running"}), None)
+    if active:
+        return jsonify({"error": "longform_already_running", "job": healing_job_payload(active)}), 409
+    root["sample_mode"] = True
+    root["sample_seconds"] = 25
+    job_id = create_healing_job(config, trigger="sample")
+    thread = threading.Thread(target=run_healing_longform_job, args=(job_id, config), daemon=True)
+    thread.start()
+    return jsonify({"job": healing_job_payload(healing_job(job_id) or {})}), 202
+
+
+@app.post("/api/healing-longform/backgrounds/import")
+@require_auth
+def api_import_healing_longform_backgrounds():
+    payload = request.get_json(silent=True) or {}
+    query = str(payload.get("query") or "bright peaceful nature sunlight").strip()[:80]
+    theme_category = str(payload.get("theme_category") or "").strip().lower()
+    try:
+        count = max(1, min(6, int(payload.get("count") or 4)))
+    except (TypeError, ValueError):
+        count = 4
+    collection = "longform-16x9"
+    try:
+        candidates = search_pexels_videos(query, per_page=count, orientation="landscape")
+        assets = []
+        errors = []
+        for candidate in candidates:
+            try:
+                candidate["theme_category"] = theme_category
+                assets.append(_save_longform_background(candidate))
+            except BackgroundAssetError as exc:
+                errors.append(str(exc))
+    except BackgroundAssetError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if not assets:
+        return jsonify({"error": errors[0] if errors else "가로 배경 검색 결과가 없습니다."}), 400
+    return jsonify({
+        "collection": collection,
+        "count": len(assets),
+        "assets": assets,
+        "errors": errors,
+    })
+
+
+def _save_longform_background(candidate: dict[str, object]) -> dict[str, object]:
+    item = dict(candidate)
+    width, height = int(item.get("width") or 0), int(item.get("height") or 0)
+    aspect_ratio = width / max(1, height)
+    if width <= height or not 1.5 <= aspect_ratio <= 2.0:
+        raise BackgroundAssetError("16:9에 가까운 가로 영상만 롱폼 배경으로 저장할 수 있습니다.")
+    provider_id = str(item.get("provider_id") or "").strip().removesuffix("-landscape")
+    if not provider_id:
+        raise BackgroundAssetError("Pexels 영상 ID가 없습니다.")
+    theme_category = str(item.pop("theme_category", "") or "").strip().lower()
+    if theme_category in {"morning", "comfort", "night", "recovery", "calm"}:
+        query = str(item.get("query") or "healing nature").strip()
+        if query.startswith("theme:") and " | " in query:
+            query = query.split(" | ", 1)[1]
+        item["query"] = f"theme:{theme_category} | {query}"
+    item["provider_id"] = f"{provider_id}-landscape"
+    item["collection"] = "longform-16x9"
+    item["orientation"] = "landscape"
+    return save_background_asset(item)
+
+
+@app.post("/api/healing-longform/backgrounds/import-one")
+@require_auth
+def api_import_one_healing_longform_background():
+    payload = request.get_json(silent=True) or {}
+    try:
+        asset = _save_longform_background(payload)
+    except BackgroundAssetError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"asset": asset}), 201
+
+
+@app.get("/api/healing-longform/backgrounds")
+@require_auth
+def api_healing_longform_backgrounds():
+    assets = list_background_assets_for_collection(
+        "longform-16x9",
+        landscape_only=True,
+        limit=300,
+    )
+    return jsonify({
+        "collection": "longform-16x9",
+        "backgrounds": assets,
+        "total": len(assets),
+        "active": sum(1 for item in assets if int(item.get("enabled") or 0) == 1),
+    })
+
+
+@app.get("/api/healing-longform/jobs")
+@require_auth
+def api_healing_longform_jobs():
+    return jsonify({"jobs": [healing_job_payload(job) for job in list_healing_jobs(50)]})
+
+
+@app.get("/api/healing-longform/jobs/<int:job_id>")
+@require_auth
+def api_healing_longform_job(job_id: int):
+    job = healing_job(job_id)
+    if not job:
+        return jsonify({"error": "not_found"}), 404
+    return jsonify({"job": healing_job_payload(job)})
+
+
 @app.delete("/api/videos/<path:filename>")
 @require_auth
 def api_delete_video(filename: str):
-    path = (OUTPUT_DIR / filename).resolve()
-    if path.parent != OUTPUT_DIR.resolve() or path.suffix.lower() != ".mp4":
+    try:
+        path = output_video_path(filename, must_exist=False)
+    except FileNotFoundError:
         return jsonify({"error": "invalid_filename"}), 400
 
     relative_output = path.resolve().relative_to(BASE_DIR).as_posix()
@@ -2494,6 +3296,14 @@ def api_delete_video(filename: str):
         conn.execute(
             """
             UPDATE video_jobs
+            SET status = ?, error = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE output_path = ?
+            """,
+            ("deleted", "file deleted from dashboard", relative_output),
+        )
+        conn.execute(
+            """
+            UPDATE healing_longform_jobs
             SET status = ?, error = ?, updated_at = CURRENT_TIMESTAMP
             WHERE output_path = ?
             """,
@@ -2590,8 +3400,9 @@ def api_video_youtube_upload_status(filename: str):
 @app.post("/api/videos/<path:filename>/youtube/upload")
 @require_auth
 def api_video_youtube_upload(filename: str):
-    path = (OUTPUT_DIR / filename).resolve()
-    if path.parent != OUTPUT_DIR.resolve() or not path.exists():
+    try:
+        path = output_video_path(filename)
+    except FileNotFoundError:
         return jsonify({"error": "not_found"}), 404
 
     payload = request.get_json() if request.is_json else {}
@@ -2605,7 +3416,13 @@ def api_video_youtube_upload(filename: str):
         {**metadata, "privacy_status": "private", "schedule_publish": False},
     )
     privacy_status = str(metadata["privacy_status"])
-    scheduled_publish_at = random_scheduled_publish_at() if metadata.get("schedule_publish") else None
+    scheduled_publish_at = None
+    if metadata.get("schedule_publish"):
+        scheduled_publish_at = (
+            next_longform_publish_at()
+            if is_longform_video(filename)
+            else random_scheduled_publish_at()
+        )
     if scheduled_publish_at:
         privacy_status = "private"
 
@@ -2617,7 +3434,7 @@ def api_video_youtube_upload(filename: str):
     if running_upload:
         return jsonify({"already_running": True, "upload": running_upload}), 202
 
-    upload_id = create_youtube_upload_row(filename, metadata, privacy_status)
+    upload_id = create_youtube_upload_row(filename, metadata, privacy_status, scheduled_publish_at)
     thread = threading.Thread(
         target=run_youtube_upload_job,
         args=(upload_id, path, metadata, privacy_status, scheduled_publish_at),
@@ -2656,12 +3473,19 @@ def api_update_video_youtube_remote(filename: str):
     if not upload or not upload.get("youtube_video_id"):
         return jsonify({"error": "not_uploaded"}), 404
 
+    try:
+        remote = get_video_details(str(upload["youtube_video_id"]))
+    except YouTubeUploadError as exc:
+        return jsonify({"error": str(exc), "upload": upload}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc), "upload": upload}), 500
+
     payload = request.get_json() if request.is_json else {}
     current_defaults = {
-        "title": upload.get("title") or "",
-        "description": "",
-        "tags": [],
-        "privacy_status": upload.get("privacy_status") or "private",
+        "title": remote.get("title") or upload.get("title") or "",
+        "description": remote.get("description") or "",
+        "tags": remote.get("tags") or [],
+        "privacy_status": remote.get("privacy_status") or upload.get("privacy_status") or "private",
     }
     metadata = parse_youtube_payload(payload, current_defaults)
     try:
@@ -2690,12 +3514,13 @@ def api_update_video_youtube_remote(filename: str):
 @require_auth
 def api_search_backgrounds():
     query = request.args.get("q", "calm library")
+    orientation = "landscape" if request.args.get("orientation") == "landscape" else "portrait"
     try:
         per_page = int(request.args.get("per_page", "8"))
     except ValueError:
         per_page = 8
     try:
-        results = search_pexels_videos(query, per_page)
+        results = search_pexels_videos(query, per_page, orientation=orientation)
     except BackgroundAssetError as exc:
         return jsonify({"error": str(exc)}), 400
     return jsonify({"results": results})
@@ -2721,13 +3546,21 @@ def api_backgrounds():
         limit = int(request.args.get("limit", str(ACTIVE_BACKGROUND_LIMIT)))
     except ValueError:
         limit = ACTIVE_BACKGROUND_LIMIT
-    return jsonify({"backgrounds": list_background_assets(limit=limit, active_only=active_only)})
+    backgrounds = [
+        item for item in list_background_assets(limit=limit, active_only=active_only)
+        if str(item.get("collection") or "") != "longform-16x9"
+    ]
+    return jsonify({"backgrounds": backgrounds})
 
 
 @app.get("/api/backgrounds/collections")
 @require_auth
 def api_background_collections():
-    return jsonify({"collections": list_background_collections()})
+    collections = [
+        item for item in list_background_collections()
+        if str(item.get("collection") or "") != "longform-16x9"
+    ]
+    return jsonify({"collections": collections})
 
 
 @app.post("/api/backgrounds/collections/activate")
@@ -2773,10 +3606,20 @@ def serve_audio(filename: str):
     return send_from_directory(BASE_DIR / "outputs" / "audio", filename)
 
 
+@app.get("/bgm/<path:filename>")
+@require_auth
+def serve_bgm(filename: str):
+    return send_from_directory(BGM_DIR, filename)
+
+
 if __name__ == "__main__":
     init_db(DB_PATH)
+    reconcile_missing_output_jobs()
+    mark_stale_short_video_jobs_failed()
     mark_interrupted_youtube_uploads()
+    mark_interrupted_healing_jobs()
     start_youtube_stats_loop()
+    start_longform_scheduler()
     port = int(os.getenv("DASHBOARD_PORT", "8050"))
     host = os.getenv("DASHBOARD_HOST", "127.0.0.1")
     app.run(host=host, port=port, debug=False)

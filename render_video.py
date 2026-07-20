@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import random
@@ -21,24 +22,35 @@ from PIL import Image, ImageDraw, ImageFont
 from backgrounds import get_background_asset_by_id, list_background_assets
 from bgm import random_bgm_asset
 from db import BASE_DIR, DB_PATH, get_app_setting, init_db
-from tts import DEFAULT_RATE, DEFAULT_VOICE, create_narration_audio, resolve_voice
+from tts import (
+    DEFAULT_RATE,
+    DEFAULT_VOICE,
+    VOICE_OPTIONS,
+    create_narration_audio,
+    create_short_elevenlabs_narration_audio,
+    resolve_voice,
+    short_tts_provider,
+)
 from video_script import generate_video_script
 
 
 OUTPUT_DIR = BASE_DIR / "outputs"
 FRAME_DIR = OUTPUT_DIR / "frames"
+SUBPROCESS_CREATIONFLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 WIDTH = 1080
 HEIGHT = 1920
 FPS = 24
 BACKGROUND_SEGMENT_SECONDS = 10
 BACKGROUND_POOL_LIMIT = 500
-RECENT_BACKGROUND_EXCLUDE_COUNT = 30
+# Four daily shorts: keep every background segment out of rotation for about a month.
+RECENT_BACKGROUND_EXCLUDE_COUNT = 120
 BACKGROUND_FADE_SECONDS = 0.7
-RENDER_PRESET = os.getenv("VIDEO_RENDER_PRESET", "veryfast")
+RENDER_PRESET = os.getenv("VIDEO_RENDER_PRESET", "medium")
+RENDER_CRF = os.getenv("VIDEO_RENDER_CRF", "16")
 RENDER_THREADS = int(os.getenv("VIDEO_RENDER_THREADS", "4"))
 RENDER_ENGINE = os.getenv("VIDEO_RENDER_ENGINE", "ffmpeg")
 ENABLE_TTS_DEFAULT = os.getenv("VIDEO_TTS_ENABLED", "1") != "0"
-SUPPORTED_SOURCES = {"글반장", "직접입력", "사람로"}
+SUPPORTED_SOURCES = {"글반장", "글반장모음", "직접입력", "사람로"}
 BACKGROUND = (246, 242, 233)
 TEXT = (40, 39, 36)
 MUTED = (112, 104, 94)
@@ -67,14 +79,53 @@ def setting_float(name: str, default: str) -> float:
         return float(default)
 
 
+def first_existing_font(*paths: str) -> str:
+    for path in paths:
+        if Path(path).exists():
+            return path
+    return paths[-1]
+
+
+TITLE_FONT = first_existing_font(
+    "C:/Windows/Fonts/NanumMyeongjoBold.ttf",
+    "C:/Windows/Fonts/malgunbd.ttf",
+    "C:/Windows/Fonts/malgun.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSerifCJK-Bold.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+)
+BODY_FONT = first_existing_font(
+    "C:/Windows/Fonts/NanumMyeongjo.ttf",
+    "C:/Windows/Fonts/malgun.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+)
+BODY_BOLD_FONT = first_existing_font(
+    "C:/Windows/Fonts/NanumMyeongjoBold.ttf",
+    "C:/Windows/Fonts/malgunbd.ttf",
+    "C:/Windows/Fonts/malgun.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSerifCJK-Bold.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+)
+SMALL_FONT = first_existing_font(
+    "C:/Windows/Fonts/malgun.ttf",
+    "C:/Windows/Fonts/NotoSansCJKkr-Regular.otf",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+)
+
+
+def ffmpeg_font_path(path: str) -> str:
+    return path.replace("\\", "/").replace(":", "\\:")
+
+
 def font(path: str, size: int) -> ImageFont.FreeTypeFont:
-    return ImageFont.truetype(path, size=size)
-
-
-TITLE_FONT = "C:/Windows/Fonts/NanumMyeongjoBold.ttf"
-BODY_FONT = "C:/Windows/Fonts/NanumMyeongjo.ttf"
-BODY_BOLD_FONT = "C:/Windows/Fonts/NanumMyeongjoBold.ttf"
-SMALL_FONT = "C:/Windows/Fonts/malgun.ttf"
+    try:
+        return ImageFont.truetype(path, size=size)
+    except OSError:
+        return ImageFont.load_default(size=size)
 
 
 def text_size(draw: ImageDraw.ImageDraw, text: str, text_font: ImageFont.ImageFont) -> tuple[int, int]:
@@ -88,7 +139,7 @@ def draw_centered_text(
     text: str,
     text_font: ImageFont.ImageFont,
     fill: tuple[int, int, int],
-) -> None:
+) -> list[int]:
     width, _ = text_size(draw, text, text_font)
     draw.text(((WIDTH - width) / 2, y), text, font=text_font, fill=fill)
 
@@ -354,11 +405,45 @@ def prepared_background_clip(path: Path, duration: float):
     return cropped.with_effects([vfx.Loop(duration=duration)]).with_duration(duration)
 
 
+def recent_background_asset_ids() -> set[int]:
+    init_db(DB_PATH)
+    recent_ids: set[int] = set()
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        rows = conn.execute(
+            """
+            SELECT background_asset_id, background_asset_ids
+            FROM video_jobs
+            WHERE background_asset_id IS NOT NULL
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (RECENT_BACKGROUND_EXCLUDE_COUNT,),
+        ).fetchall()
+    for primary_id, asset_ids_json in rows:
+        if primary_id is not None:
+            recent_ids.add(int(primary_id))
+        if asset_ids_json:
+            try:
+                recent_ids.update(int(value) for value in json.loads(asset_ids_json))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+    return recent_ids
+
+
 def ordered_background_assets(first_asset_id: int) -> list[dict[str, object]]:
-    assets = list_background_assets(limit=BACKGROUND_POOL_LIMIT, active_only=True)
+    assets = [
+        asset for asset in list_background_assets(limit=BACKGROUND_POOL_LIMIT, active_only=True)
+        if str(asset.get("collection") or "") != "longform-16x9"
+    ]
     existing = [asset for asset in assets if (BASE_DIR / str(asset.get("local_path"))).exists()]
     selected = [asset for asset in existing if int(asset["id"]) == first_asset_id]
-    others = [asset for asset in existing if int(asset["id"]) != first_asset_id]
+    recent_ids = recent_background_asset_ids()
+    others = [
+        asset for asset in existing
+        if int(asset["id"]) != first_asset_id and int(asset["id"]) not in recent_ids
+    ]
+    if not others:
+        others = [asset for asset in existing if int(asset["id"]) != first_asset_id]
     random.shuffle(others)
     return selected + others if selected else others
 
@@ -372,9 +457,10 @@ def background_clip_for_asset(asset_id: int, duration: float):
         local_path = BASE_DIR / str(assets[0]["local_path"])
         if not local_path.exists():
             raise RuntimeError(f"Background file not found: {local_path}")
-        return prepared_background_clip(local_path, duration)
+        return prepared_background_clip(local_path, duration), [int(assets[0]["id"])]
 
     clips = []
+    used_asset_ids: list[int] = []
     remaining = duration
     index = 0
     while remaining > 0:
@@ -384,12 +470,13 @@ def background_clip_for_asset(asset_id: int, duration: float):
         if not local_path.exists():
             raise RuntimeError(f"Background file not found: {local_path}")
         clips.append(prepared_background_clip(local_path, segment_duration))
+        used_asset_ids.append(int(segment_asset["id"]))
         remaining -= segment_duration
         index += 1
-    return concatenate_videoclips(clips, method="compose")
+    return concatenate_videoclips(clips, method="compose"), used_asset_ids
 
 
-def background_segment_paths(asset_id: int, duration: float) -> list[tuple[Path, float]]:
+def background_segment_paths(asset_id: int, duration: float) -> list[tuple[Path, float, int]]:
     asset = get_background_asset_by_id(asset_id)
     if not asset:
         raise RuntimeError(f"Background asset not found: {asset_id}")
@@ -399,9 +486,9 @@ def background_segment_paths(asset_id: int, duration: float) -> list[tuple[Path,
         local_path = BASE_DIR / str(assets[0]["local_path"])
         if not local_path.exists():
             raise RuntimeError(f"Background file not found: {local_path}")
-        return [(local_path, duration)]
+        return [(local_path, duration, int(assets[0]["id"]))]
 
-    segments: list[tuple[Path, float]] = []
+    segments: list[tuple[Path, float, int]] = []
     remaining = duration
     index = 0
     while remaining > 0:
@@ -410,7 +497,7 @@ def background_segment_paths(asset_id: int, duration: float) -> list[tuple[Path,
         local_path = BASE_DIR / str(segment_asset["local_path"])
         if not local_path.exists():
             raise RuntimeError(f"Background file not found: {local_path}")
-        segments.append((local_path, segment_duration))
+        segments.append((local_path, segment_duration, int(segment_asset["id"])))
         remaining -= segment_duration
         index += 1
     return segments
@@ -420,24 +507,12 @@ def random_background_asset_id() -> int | None:
     assets = [
         asset
         for asset in list_background_assets(limit=BACKGROUND_POOL_LIMIT, active_only=True)
-        if (BASE_DIR / str(asset.get("local_path"))).exists()
+        if str(asset.get("collection") or "") != "longform-16x9"
+        and (BASE_DIR / str(asset.get("local_path"))).exists()
     ]
     if not assets:
         return None
-    recent_ids: set[int] = set()
-    init_db(DB_PATH)
-    with closing(sqlite3.connect(DB_PATH)) as conn:
-        rows = conn.execute(
-            """
-            SELECT DISTINCT background_asset_id
-            FROM video_jobs
-            WHERE background_asset_id IS NOT NULL
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (RECENT_BACKGROUND_EXCLUDE_COUNT,),
-        ).fetchall()
-    recent_ids = {int(row[0]) for row in rows if row[0] is not None}
+    recent_ids = recent_background_asset_ids()
     candidates = [asset for asset in assets if int(asset["id"]) not in recent_ids]
     return int(random.choice(candidates or assets)["id"])
 
@@ -453,7 +528,7 @@ def run_ffmpeg_overlay_render(
     background_segments = background_segment_paths(background_asset_id, total_duration)
 
     command = ["ffmpeg", "-y"]
-    for path, _duration in background_segments:
+    for path, _duration, _asset_id in background_segments:
         command.extend(["-stream_loop", "-1", "-i", str(path)])
     command.extend(["-loop", "1", "-t", f"{total_duration:.3f}", "-i", static_overlay_path])
     for frame_path, duration in zip(frame_paths, durations):
@@ -467,7 +542,7 @@ def run_ffmpeg_overlay_render(
         )
     else:
         segment_labels = []
-        for index, (_path, duration) in enumerate(background_segments):
+        for index, (_path, duration, _asset_id) in enumerate(background_segments):
             label = f"bg{index}"
             fade_out_start = max(0.0, duration - BACKGROUND_FADE_SECONDS)
             filters.append(
@@ -524,15 +599,32 @@ def run_ffmpeg_overlay_render(
             "libx264",
             "-preset",
             RENDER_PRESET,
+            "-crf",
+            RENDER_CRF,
             "-threads",
             str(RENDER_THREADS),
             "-pix_fmt",
             "yuv420p",
+            "-colorspace",
+            "bt709",
+            "-color_primaries",
+            "bt709",
+            "-color_trc",
+            "bt709",
+            "-movflags",
+            "+faststart",
             "-an",
             str(output),
         ]
     )
-    subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(
+        command,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=SUBPROCESS_CREATIONFLAGS,
+    )
+    return [asset_id for _path, _duration, asset_id in background_segments]
 
 
 def mux_audio(video_path: Path, audio_path: Path) -> None:
@@ -549,6 +641,10 @@ def mux_audio(video_path: Path, audio_path: Path) -> None:
             "0:v:0",
             "-map",
             "1:a:0",
+            "-map_metadata",
+            "-1",
+            "-map_chapters",
+            "-1",
             "-c:v",
             "copy",
             "-c:a",
@@ -560,6 +656,7 @@ def mux_audio(video_path: Path, audio_path: Path) -> None:
         check=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        creationflags=SUBPROCESS_CREATIONFLAGS,
     )
     temp_output.replace(video_path)
 
@@ -579,6 +676,7 @@ def ffprobe_video_duration(video_path: Path) -> float:
         check=True,
         capture_output=True,
         text=True,
+        creationflags=SUBPROCESS_CREATIONFLAGS,
     )
     return float(result.stdout.strip() or 0)
 
@@ -600,9 +698,33 @@ def ffprobe_video_size(video_path: Path) -> tuple[int, int]:
         check=True,
         capture_output=True,
         text=True,
+        creationflags=SUBPROCESS_CREATIONFLAGS,
     )
     width, height = result.stdout.strip().split("x", 1)
     return int(width), int(height)
+
+
+def ffprobe_video_bitrate(video_path: Path) -> int:
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "quiet",
+            "-show_entries",
+            "format=bit_rate",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(video_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        creationflags=SUBPROCESS_CREATIONFLAGS,
+    )
+    try:
+        return int(float(result.stdout.strip() or 0))
+    except ValueError:
+        return 0
 
 
 def ffprobe_has_audio(video_path: Path) -> bool:
@@ -622,8 +744,101 @@ def ffprobe_has_audio(video_path: Path) -> bool:
         check=True,
         capture_output=True,
         text=True,
+        creationflags=SUBPROCESS_CREATIONFLAGS,
     )
     return bool(result.stdout.strip())
+
+
+def extract_audit_frame(video_path: Path, output_path: Path, timestamp: float) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-ss",
+            f"{max(0.0, timestamp):.3f}",
+            "-i",
+            str(video_path),
+            "-frames:v",
+            "1",
+            "-q:v",
+            "3",
+            str(output_path),
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        creationflags=SUBPROCESS_CREATIONFLAGS,
+    )
+
+
+def audit_video_before_upload(video_path: Path, label: str = "youtube") -> dict[str, object]:
+    if not video_path.exists() or video_path.stat().st_size <= 0:
+        raise RuntimeError(f"Video audit failed: missing or empty file: {video_path}")
+
+    duration = ffprobe_video_duration(video_path)
+    width, height = ffprobe_video_size(video_path)
+    bitrate = ffprobe_video_bitrate(video_path)
+    has_audio = ffprobe_has_audio(video_path)
+    file_size = video_path.stat().st_size
+    is_short = height > width
+    min_width, min_height = (1080, 1920) if is_short else (1920, 1080)
+
+    errors: list[str] = []
+    warnings: list[str] = []
+    if duration < 5:
+        errors.append(f"duration_too_short:{duration:.2f}s")
+    if width < min_width or height < min_height:
+        errors.append(f"resolution_too_low:{width}x{height}")
+    if bitrate and bitrate < 1_200_000:
+        warnings.append(f"low_bitrate:{bitrate}")
+    if not has_audio:
+        warnings.append("no_audio_stream")
+
+    audit_dir = BASE_DIR / ".tmp" / "video_audit" / "pre_upload" / video_path.stem
+    first_frame = audit_dir / "sample_10s.jpg"
+    end_frame = audit_dir / "sample_end.jpg"
+    sample_times = [
+        min(max(duration * 0.25, 1.0), max(duration - 1.0, 1.0)),
+        max(duration - 2.0, 0.0),
+    ]
+    try:
+        extract_audit_frame(video_path, first_frame, sample_times[0])
+        extract_audit_frame(video_path, end_frame, sample_times[1])
+    except subprocess.CalledProcessError as exc:
+        errors.append(f"frame_extract_failed:{(exc.stderr or str(exc))[-300:]}")
+
+    for frame in (first_frame, end_frame):
+        if not frame.exists() or frame.stat().st_size <= 0:
+            errors.append(f"missing_audit_frame:{frame.name}")
+
+    report = {
+        "label": label,
+        "video_path": str(video_path.resolve()),
+        "duration_seconds": round(duration, 3),
+        "width": width,
+        "height": height,
+        "bitrate": bitrate,
+        "file_size": file_size,
+        "has_audio": has_audio,
+        "sample_frames": [
+            first_frame.resolve().relative_to(BASE_DIR).as_posix(),
+            end_frame.resolve().relative_to(BASE_DIR).as_posix(),
+        ],
+        "warnings": warnings,
+        "errors": errors,
+    }
+    audit_dir.mkdir(parents=True, exist_ok=True)
+    (audit_dir / "audit.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    if errors:
+        raise RuntimeError(f"Video audit failed before upload: {', '.join(errors)}")
+    return report
 
 
 def mix_bgm(video_path: Path, bgm_path: Path) -> None:
@@ -664,6 +879,10 @@ def mix_bgm(video_path: Path, bgm_path: Path) -> None:
             "0:v:0",
             "-map",
             "[a]",
+            "-map_metadata",
+            "-1",
+            "-map_chapters",
+            "-1",
             "-c:v",
             "copy",
             "-c:a",
@@ -676,6 +895,7 @@ def mix_bgm(video_path: Path, bgm_path: Path) -> None:
         check=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        creationflags=SUBPROCESS_CREATIONFLAGS,
     )
     temp_output.replace(video_path)
 
@@ -689,23 +909,45 @@ def _escape_drawtext_text(text: str) -> str:
     )
 
 
-def add_cta_subtitle(video_path: Path) -> None:
+def add_subscribe_cta_card(
+    video_path: Path,
+    duration_seconds: float | None = None,
+) -> None:
     width, height = ffprobe_video_size(video_path)
     has_audio = ffprobe_has_audio(video_path)
-    temp_output = video_path.with_name(f"{video_path.stem}-cta{video_path.suffix}")
-    font_file = "C\\:/Windows/Fonts/malgun.ttf"
-    cta_text = random.choice(
-        [
-            "이 문장이 오늘 필요하셨나요? 댓글로 알려주세요",
-            "저장하고 싶은 문장이었나요?",
-            "공감되셨다면 구독 부탁드려요",
-        ]
+    duration_seconds = SUBSCRIBE_CTA_SECONDS if duration_seconds is None else duration_seconds
+    duration_seconds = max(1.0, float(duration_seconds))
+    temp_output = video_path.with_name(f"{video_path.stem}-subscribe-cta{video_path.suffix}")
+    font_file = ffmpeg_font_path(SMALL_FONT)
+    cta_lines = random.choice(load_subscribe_cta_lines()).splitlines()
+    cta_lines = [line.strip() for line in cta_lines if line.strip()][:2]
+    if len(cta_lines) == 1:
+        cta_lines.append("다음 문장도 함께해 주세요")
+    card_fade_out_start = max(0.0, duration_seconds - 1.0)
+    text_start = 0.5
+    text_fade_in_seconds = 1.0
+    text_fade_out_seconds = 0.7
+    text_fade_in_end = text_start + text_fade_in_seconds
+    text_fade_out_start = max(text_fade_in_end, duration_seconds - text_fade_out_seconds)
+    text_alpha = (
+        f"if(lt(t\\,{text_start:.3f})\\,0\\,"
+        f"if(lt(t\\,{text_fade_in_end:.3f})\\,(t-{text_start:.3f})/{text_fade_in_seconds:.3f}\\,"
+        f"if(lt(t\\,{text_fade_out_start:.3f})\\,1\\,"
+        f"max(0\\,({duration_seconds:.3f}-t)/{text_fade_out_seconds:.3f}))))"
     )
-    text = _escape_drawtext_text(cta_text)
+    text_y_positions = ["h/2-72-text_h/2", "h/2+10-text_h/2"]
+    drawtext_filters = []
+    for line, y_position in zip(cta_lines, text_y_positions):
+        text = _escape_drawtext_text(line)
+        drawtext_filters.append(
+            f"drawtext=fontfile='{font_file}':text='{text}':"
+            "fontsize=42:fontcolor=white@0.94:borderw=2:bordercolor=black@0.55:"
+            f"x=(w-text_w)/2:y={y_position}:"
+            f"alpha='{text_alpha}'"
+        )
     cta_filter = (
-        f"drawtext=fontfile='{font_file}':text='{text}':"
-        "fontsize=42:fontcolor=white:borderw=4:bordercolor=black:"
-        "x=(w-text_w)/2:y=(h-text_h)/2"
+        f"fade=t=in:st=0:d=0.8,fade=t=out:st={card_fade_out_start:.3f}:d=1.0,"
+        + ",".join(drawtext_filters)
     )
     command = [
         "ffmpeg",
@@ -715,7 +957,7 @@ def add_cta_subtitle(video_path: Path) -> None:
         "-f",
         "lavfi",
         "-t",
-        "3",
+        f"{duration_seconds:.3f}",
         "-i",
         f"color=c=black:s={width}x{height}:r={FPS}",
     ]
@@ -725,7 +967,7 @@ def add_cta_subtitle(video_path: Path) -> None:
                 "-f",
                 "lavfi",
                 "-t",
-                "3",
+                f"{duration_seconds:.3f}",
                 "-i",
                 "anullsrc=channel_layout=stereo:sample_rate=44100",
                 "-filter_complex",
@@ -738,6 +980,10 @@ def add_cta_subtitle(video_path: Path) -> None:
                 "[v]",
                 "-map",
                 "[a]",
+                "-map_metadata",
+                "-1",
+                "-map_chapters",
+                "-1",
                 "-c:a",
                 "aac",
                 "-b:a",
@@ -755,6 +1001,10 @@ def add_cta_subtitle(video_path: Path) -> None:
                 ),
                 "-map",
                 "[v]",
+                "-map_metadata",
+                "-1",
+                "-map_chapters",
+                "-1",
                 "-an",
             ]
         )
@@ -764,15 +1014,60 @@ def add_cta_subtitle(video_path: Path) -> None:
             "libx264",
             "-preset",
             RENDER_PRESET,
+            "-crf",
+            RENDER_CRF,
             "-threads",
             str(RENDER_THREADS),
             "-pix_fmt",
             "yuv420p",
+            "-colorspace",
+            "bt709",
+            "-color_primaries",
+            "bt709",
+            "-color_trc",
+            "bt709",
+            "-movflags",
+            "+faststart",
             str(temp_output),
         ]
     )
-    subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(
+        command,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=SUBPROCESS_CREATIONFLAGS,
+    )
     temp_output.replace(video_path)
+
+
+DEFAULT_SUBSCRIBE_CTA_LINES = [
+    "구독하고\n다음 문장도 함께해 주세요",
+    "다음 조각은\n구독으로 이어가 주세요",
+    "내일도 한 문장\n구독으로 받아보세요",
+    "짧은 지혜가 필요할 때\n구독하고 다시 찾아와 주세요",
+    "좋은 문장을 계속 만나고 싶다면\n구독으로 함께해 주세요",
+]
+SUBSCRIBE_CTA_SECONDS = 4.0
+
+
+def load_subscribe_cta_lines() -> list[str]:
+    path = BASE_DIR / "assets" / "cta_lines.json"
+    if not path.exists():
+        return DEFAULT_SUBSCRIBE_CTA_LINES
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return DEFAULT_SUBSCRIBE_CTA_LINES
+    active_set = str(payload.get("active_set") or "")
+    sets = payload.get("sets")
+    if not isinstance(sets, dict):
+        return DEFAULT_SUBSCRIBE_CTA_LINES
+    lines = sets.get(active_set)
+    if not isinstance(lines, list):
+        return DEFAULT_SUBSCRIBE_CTA_LINES
+    cleaned = [str(line).strip() for line in lines if str(line).strip()]
+    return cleaned or DEFAULT_SUBSCRIBE_CTA_LINES
 
 
 def render_video(
@@ -806,18 +1101,39 @@ def render_video(
     durations: list[float] = []
     narration_path: Path | None = None
     if tts_enabled:
-        tts_voice = resolve_voice(tts_voice)
-        progress("TTS 생성 중", 15)
-        narration_path, tts_durations = create_narration_audio(
-            pages,
-            job_key,
-            voice=tts_voice,
-            rate=tts_rate,
-        )
+        provider = short_tts_provider()
+        if provider == "elevenlabs":
+            try:
+                progress("ElevenLabs Flash v2.5 TTS 생성 중", 15)
+                narration_path, tts_durations, selected_voice = create_short_elevenlabs_narration_audio(
+                    pages,
+                    job_key,
+                )
+                tts_voice = str(selected_voice["voice_id"])
+                script["tts_provider"] = "elevenlabs"
+                script["tts_model"] = str(selected_voice["model_id"])
+                script["tts_voice_name"] = str(selected_voice["name"])
+                script["tts_voice_gender"] = str(selected_voice["gender"])
+            except Exception as exc:
+                script["tts_fallback_error"] = str(exc)[:500]
+                provider = "edge"
+                progress("ElevenLabs 실패 · Edge 무료 음성으로 전환", 15)
+        if provider == "edge":
+            edge_voice = tts_voice if tts_voice in VOICE_OPTIONS else DEFAULT_VOICE
+            tts_voice = resolve_voice(edge_voice)
+            narration_path, tts_durations = create_narration_audio(
+                pages,
+                job_key,
+                voice=tts_voice,
+                rate=tts_rate,
+            )
+            script["tts_provider"] = "edge"
+            script["tts_model"] = "edge-tts"
         for page, duration in zip(pages, tts_durations):
             page["duration_seconds"] = max(3.2, duration)
         script["tts_audio_path"] = narration_path.resolve().relative_to(BASE_DIR).as_posix()
         script["tts_voice"] = tts_voice
+        script["tts_rate"] = tts_rate
         script["estimated_seconds"] = sum(float(page["duration_seconds"]) for page in pages)
     else:
         progress("프레임 준비 중", 15)
@@ -840,7 +1156,7 @@ def render_video(
     progress("배경 합성 중", 45)
     if background_asset_id:
         if RENDER_ENGINE == "ffmpeg":
-            run_ffmpeg_overlay_render(
+            used_background_asset_ids = run_ffmpeg_overlay_render(
                 background_asset_id,
                 str(static_overlay_path),
                 frame_paths,
@@ -849,7 +1165,9 @@ def render_video(
             )
         else:
             total_duration = sum(durations)
-            background = background_clip_for_asset(background_asset_id, total_duration)
+            background, used_background_asset_ids = background_clip_for_asset(
+                background_asset_id, total_duration
+            )
             static_overlay = ImageClip(str(static_overlay_path)).with_duration(total_duration)
             overlays = []
             start = 0.0
@@ -871,6 +1189,20 @@ def render_video(
                 audio=False,
                 preset=RENDER_PRESET,
                 threads=RENDER_THREADS,
+                ffmpeg_params=[
+                    "-crf",
+                    RENDER_CRF,
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-colorspace",
+                    "bt709",
+                    "-color_primaries",
+                    "bt709",
+                    "-color_trc",
+                    "bt709",
+                    "-movflags",
+                    "+faststart",
+                ],
                 logger=None,
             )
             clip.close()
@@ -878,6 +1210,7 @@ def render_video(
             static_overlay.close()
             for overlay in overlays:
                 overlay.close()
+        script["background_asset_ids"] = used_background_asset_ids
     else:
         clip = ImageSequenceClip(frame_paths, durations=durations)
         clip.write_videofile(
@@ -887,14 +1220,28 @@ def render_video(
             audio=False,
             preset=RENDER_PRESET,
             threads=RENDER_THREADS,
+            ffmpeg_params=[
+                "-crf",
+                RENDER_CRF,
+                "-pix_fmt",
+                "yuv420p",
+                "-colorspace",
+                "bt709",
+                "-color_primaries",
+                "bt709",
+                "-color_trc",
+                "bt709",
+                "-movflags",
+                "+faststart",
+            ],
             logger=None,
         )
         clip.close()
     if narration_path:
         progress("오디오 합성 중", 85)
         mux_audio(output, narration_path)
-    progress("댓글 자막 추가 중", 92)
-    add_cta_subtitle(output)
+    progress("구독 엔딩 추가 중", 92)
+    add_subscribe_cta_card(output)
     if bgm_asset:
         progress("BGM 합성 중", 96)
         bgm_path = BASE_DIR / str(bgm_asset["local_path"])

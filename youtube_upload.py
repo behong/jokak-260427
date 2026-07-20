@@ -20,6 +20,7 @@ SCOPES = [
 MAX_YOUTUBE_TITLE_LENGTH = 100
 MAX_YOUTUBE_DESCRIPTION_LENGTH = 5000
 MAX_YOUTUBE_TAG_LENGTH = 500
+FULLWIDTH_BAR_TOKEN = "__JOKAK_FULLWIDTH_VERTICAL_BAR__"
 
 
 def materialize_youtube_files_from_settings() -> None:
@@ -47,7 +48,8 @@ def is_invalid_grant_error(exc: Exception) -> bool:
 
 
 def _clean_youtube_text(value: str, max_length: int) -> str:
-    normalized = unicodedata.normalize("NFKC", str(value or ""))
+    raw_value = str(value or "").replace("｜", FULLWIDTH_BAR_TOKEN)
+    normalized = unicodedata.normalize("NFKC", raw_value)
     normalized = normalized.replace("\r\n", "\n").replace("\r", "\n")
     cleaned = []
     for char in normalized:
@@ -63,7 +65,7 @@ def _clean_youtube_text(value: str, max_length: int) -> str:
         cleaned.append(char)
     text = "".join(cleaned)
     lines = [" ".join(line.split()) for line in text.split("\n")]
-    text = "\n".join(lines).strip()
+    text = "\n".join(lines).strip().replace(FULLWIDTH_BAR_TOKEN, "｜")
     if len(text) <= max_length:
         return text
     return text[: max_length - 3].rstrip() + "..."
@@ -234,6 +236,7 @@ def upload_video(
     privacy_status: str = "private",
     category_id: str = "22",
     publish_at: datetime | None = None,
+    contains_synthetic_media: bool = False,
 ) -> dict[str, Any]:
     if privacy_status not in {"private", "unlisted", "public"}:
         raise YouTubeUploadError("privacy_status must be private, unlisted, or public")
@@ -247,6 +250,7 @@ def upload_video(
     status_body = {
         "privacyStatus": privacy_status,
         "selfDeclaredMadeForKids": False,
+        "containsSyntheticMedia": bool(contains_synthetic_media),
     }
     if publish_at:
         if publish_at.tzinfo is None:
@@ -290,6 +294,148 @@ def youtube_service():
     return build("youtube", "v3", credentials=youtube_credentials(interactive=False))
 
 
+def authenticated_channel_id() -> str:
+    youtube = youtube_service()
+    try:
+        response = youtube.channels().list(part="id", mine=True).execute()
+    except Exception as exc:
+        _raise_youtube_api_error(exc)
+    items = response.get("items") or []
+    if not items:
+        raise YouTubeUploadError("인증된 YouTube 채널 정보를 찾을 수 없습니다.")
+    return str(items[0]["id"])
+
+
+def post_top_level_comment(video_id: str, text: str) -> dict[str, Any]:
+    clean_text = _clean_youtube_text(text, 10000)
+    if not clean_text:
+        raise YouTubeUploadError("댓글 내용이 비어 있습니다.")
+    youtube = youtube_service()
+    body = {
+        "snippet": {
+            "channelId": authenticated_channel_id(),
+            "videoId": video_id,
+            "topLevelComment": {
+                "snippet": {
+                    "textOriginal": clean_text,
+                },
+            },
+        },
+    }
+    try:
+        response = youtube.commentThreads().insert(
+            part="snippet",
+            body=body,
+        ).execute()
+    except Exception as exc:
+        _raise_youtube_api_error(exc)
+    return response
+
+
+def find_or_create_playlist(title: str) -> str:
+    clean_title = _clean_youtube_text(title, 150)
+    if not clean_title:
+        raise YouTubeUploadError("재생목록 이름이 비어 있습니다.")
+    youtube = youtube_service()
+    page_token = None
+    while True:
+        try:
+            response = youtube.playlists().list(
+                part="snippet",
+                mine=True,
+                maxResults=50,
+                pageToken=page_token,
+            ).execute()
+        except Exception as exc:
+            _raise_youtube_api_error(exc)
+        for item in response.get("items") or []:
+            if str((item.get("snippet") or {}).get("title") or "").strip() == clean_title:
+                return str(item["id"])
+        page_token = response.get("nextPageToken")
+        if not page_token:
+            break
+    try:
+        response = youtube.playlists().insert(
+            part="snippet,status",
+            body={
+                "snippet": {
+                    "title": clean_title,
+                    "description": "잠들기 전 편안하게 듣는 지혜로운 조각들의 힐링 낭독 모음입니다.",
+                },
+                "status": {"privacyStatus": "public"},
+            },
+        ).execute()
+    except Exception as exc:
+        _raise_youtube_api_error(exc)
+    return str(response["id"])
+
+
+def add_video_to_playlist(playlist_id: str, video_id: str) -> str:
+    youtube = youtube_service()
+    try:
+        existing = youtube.playlistItems().list(
+            part="id",
+            playlistId=playlist_id,
+            videoId=video_id,
+            maxResults=1,
+        ).execute()
+    except Exception as exc:
+        _raise_youtube_api_error(exc)
+    items = existing.get("items") or []
+    if items:
+        return str(items[0]["id"])
+    try:
+        response = youtube.playlistItems().insert(
+            part="snippet",
+            body={
+                "snippet": {
+                    "playlistId": playlist_id,
+                    "resourceId": {"kind": "youtube#video", "videoId": video_id},
+                }
+            },
+        ).execute()
+    except Exception as exc:
+        _raise_youtube_api_error(exc)
+    return str(response["id"])
+
+
+def upload_korean_caption(video_id: str, subtitle_path: Path) -> str:
+    if not subtitle_path.is_file():
+        raise YouTubeUploadError(f"자막 파일을 찾을 수 없습니다: {subtitle_path}")
+    youtube = youtube_service()
+    try:
+        existing = youtube.captions().list(part="snippet", videoId=video_id).execute()
+    except Exception as exc:
+        _raise_youtube_api_error(exc)
+    for item in existing.get("items") or []:
+        snippet = item.get("snippet") or {}
+        if str(snippet.get("language") or "").lower() == "ko":
+            return str(item["id"])
+
+    _credentials, _flow, _installed_flow, _request, _HttpError, _build, MediaFileUpload = _import_google_clients()
+    media = MediaFileUpload(
+        str(subtitle_path),
+        mimetype="application/x-subrip",
+        resumable=False,
+    )
+    try:
+        response = youtube.captions().insert(
+            part="snippet",
+            body={
+                "snippet": {
+                    "videoId": video_id,
+                    "language": "ko",
+                    "name": "한국어",
+                    "isDraft": False,
+                }
+            },
+            media_body=media,
+        ).execute()
+    except Exception as exc:
+        _raise_youtube_api_error(exc)
+    return str(response["id"])
+
+
 def _raise_youtube_api_error(exc: Exception) -> None:
     message = str(exc)
     if is_invalid_grant_error(exc):
@@ -328,6 +474,10 @@ def get_video_details(video_id: str) -> dict[str, Any]:
         "tags": snippet.get("tags") or [],
         "category_id": snippet.get("categoryId") or "22",
         "privacy_status": status.get("privacyStatus") or "private",
+        "publish_at": status.get("publishAt"),
+        "contains_synthetic_media": status.get("containsSyntheticMedia"),
+        "license": status.get("license"),
+        "self_declared_made_for_kids": status.get("selfDeclaredMadeForKids"),
         "embeddable": status.get("embeddable"),
         "public_stats_viewable": status.get("publicStatsViewable"),
     }
@@ -366,7 +516,7 @@ def update_video_metadata(
 
     current = get_video_details(video_id)
     youtube = youtube_service()
-    body = {
+    body: dict[str, Any] = {
         "id": video_id,
         "snippet": {
             "title": title,
@@ -374,14 +524,26 @@ def update_video_metadata(
             "tags": tags,
             "categoryId": current["category_id"],
         },
-        "status": {
-            "privacyStatus": privacy_status,
-            "selfDeclaredMadeForKids": False,
-        },
     }
+    parts = ["snippet"]
+    if privacy_status != current["privacy_status"]:
+        status_body = {
+            "privacyStatus": privacy_status,
+            "selfDeclaredMadeForKids": bool(current.get("self_declared_made_for_kids")),
+        }
+        for target, source in (
+            ("containsSyntheticMedia", "contains_synthetic_media"),
+            ("license", "license"),
+            ("embeddable", "embeddable"),
+            ("publicStatsViewable", "public_stats_viewable"),
+        ):
+            if current.get(source) is not None:
+                status_body[target] = current[source]
+        body["status"] = status_body
+        parts.append("status")
     try:
         response = youtube.videos().update(
-            part="snippet,status",
+            part=",".join(parts),
             body=body,
         ).execute()
     except Exception as exc:

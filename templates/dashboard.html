@@ -535,6 +535,18 @@
       letter-spacing: 0;
     }
 
+    .library-filters {
+      display: grid;
+      grid-template-columns: 150px minmax(180px, 1fr) auto auto;
+      gap: 8px;
+      align-items: end;
+      margin-bottom: 12px;
+    }
+
+    .library-filters label {
+      margin: 0 0 5px;
+    }
+
     .video-grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
@@ -631,6 +643,20 @@
       resize: vertical;
     }
 
+    .title-options {
+      display: grid;
+      gap: 6px;
+      margin-top: 8px;
+    }
+
+    .title-option {
+      justify-content: flex-start;
+      width: 100%;
+      min-height: 36px;
+      text-align: left;
+      font-weight: 600;
+    }
+
     .modal > button {
       position: fixed;
       top: 16px;
@@ -709,6 +735,7 @@
       .toolbar { grid-template-columns: 1fr; }
       .settings-grid { grid-template-columns: 1fr; }
       .quick-settings-grid { grid-template-columns: 1fr; }
+      .library-filters { grid-template-columns: 1fr; }
       .table-wrap { overflow-x: auto; }
       table { min-width: 900px; }
     }
@@ -727,13 +754,7 @@
       </form>
       {% endif %}
     </div>
-    <nav class="top-menu" aria-label="상단 메뉴">
-      <a class="active" href="/">대시보드</a>
-      <a href="/manual">수동 좋은글</a>
-      <a href="/generated-videos">생성영상</a>
-      <a href="/background-library">배경영상</a>
-      <a href="/settings">운영 설정</a>
-    </nav>
+    {% include "_top_menu.html" %}
   </header>
 
   <main>
@@ -916,6 +937,22 @@
         </div>
         <button class="secondary" type="button" id="refreshVideoLibrary">새로고침</button>
       </div>
+      <div class="library-filters" aria-label="생성 영상 검색">
+        <div>
+          <label for="dashboardVideoTypeFilter">영상 구분</label>
+          <select id="dashboardVideoTypeFilter">
+            <option value="all">전체</option>
+            <option value="long">긴영상</option>
+            <option value="short">짧은영상</option>
+          </select>
+        </div>
+        <div>
+          <label for="dashboardVideoSearchQuery">검색어</label>
+          <input id="dashboardVideoSearchQuery" type="search" placeholder="제목 또는 파일명 검색">
+        </div>
+        <button class="secondary" type="button" id="dashboardSearchVideoLibrary">검색</button>
+        <button type="button" id="dashboardShowLongVideos">긴영상만 보기</button>
+      </div>
       <div class="video-grid" id="videoLibrary"></div>
     </section>
 
@@ -954,17 +991,34 @@
         <input id="enableTts" type="checkbox" checked>
         <span>TTS 포함</span>
       </label>
+      <div class="subtle">
+        {% if short_tts_provider == "elevenlabs" %}
+          숏폼 기본: ElevenLabs Flash v2.5 · 여성 Anna Kim/Jennie · 남성 Hyuk/Chris 중 영상별 랜덤
+        {% else %}
+          숏폼 기본: Microsoft Edge 무료 음성
+        {% endif %}
+      </div>
       <select id="ttsVoice">
-        {% for voice_value, voice_label in voice_options.items() %}
-          <option value="{{ voice_value }}" {% if voice_value == "random" %}selected{% endif %}>{{ voice_label }}</option>
-        {% endfor %}
+        {% if short_tts_provider == "elevenlabs" %}
+          <option value="elevenlabs-popular-random" selected>인기 한국어 여성 2명·남성 2명 랜덤</option>
+        {% else %}
+          {% for voice_value, voice_label in voice_options.items() %}
+            <option value="{{ voice_value }}" {% if voice_value == "random" %}selected{% endif %}>{{ voice_label }}</option>
+          {% endfor %}
+        {% endif %}
       </select>
       <label for="ttsRate">읽는 속도</label>
-      <select id="ttsRate">
-        <option value="slow">느리게</option>
-        <option value="normal" selected>보통</option>
-        <option value="fast">조금 빠르게</option>
-      </select>
+      {% if short_tts_provider == "elevenlabs" %}
+        <select id="ttsRate" disabled>
+          <option value="normal" selected>Flash 기본 속도 (0.96)</option>
+        </select>
+      {% else %}
+        <select id="ttsRate">
+          <option value="slow">느리게</option>
+          <option value="normal" selected>보통</option>
+          <option value="fast">조금 빠르게</option>
+        </select>
+      {% endif %}
       <div class="row-tools">
         <button class="mini-button" type="button" id="previewTts">음성 미리듣기</button>
         <button class="mini-button" type="button" id="renderVideo">영상 생성</button>
@@ -983,6 +1037,7 @@
       <div class="subtle" id="metadataStatus"></div>
       <label for="youtubeTitle">제목</label>
       <input id="youtubeTitle" type="text">
+      <div class="title-options" id="youtubeTitleOptions"></div>
       <label for="youtubeDescription">설명</label>
       <textarea id="youtubeDescription"></textarea>
       <label for="youtubeTags">태그</label>
@@ -1046,6 +1101,10 @@
     const videoLibrary = document.querySelector("#videoLibrary");
     const videoLibraryStatus = document.querySelector("#videoLibraryStatus");
     const refreshVideoLibrary = document.querySelector("#refreshVideoLibrary");
+    const dashboardVideoTypeFilter = document.querySelector("#dashboardVideoTypeFilter");
+    const dashboardVideoSearchQuery = document.querySelector("#dashboardVideoSearchQuery");
+    const dashboardSearchVideoLibrary = document.querySelector("#dashboardSearchVideoLibrary");
+    const dashboardShowLongVideos = document.querySelector("#dashboardShowLongVideos");
     const rows = document.querySelector("#logRows");
     const totalCount = document.querySelector("#totalCount");
     const latestAt = document.querySelector("#latestAt");
@@ -1071,6 +1130,7 @@
     const closeMetadataModal = document.querySelector("#closeMetadataModal");
     const metadataStatus = document.querySelector("#metadataStatus");
     const youtubeTitle = document.querySelector("#youtubeTitle");
+    const youtubeTitleOptions = document.querySelector("#youtubeTitleOptions");
     const youtubeDescription = document.querySelector("#youtubeDescription");
     const youtubeTags = document.querySelector("#youtubeTags");
     const youtubePrivacy = document.querySelector("#youtubePrivacy");
@@ -1358,11 +1418,16 @@
     async function loadVideoLibrary() {
       videoLibraryStatus.textContent = "불러오는 중";
       try {
-        const response = await fetch("/api/videos?limit=12");
+        const params = new URLSearchParams({
+          limit: "12",
+          type: dashboardVideoTypeFilter.value,
+          q: dashboardVideoSearchQuery.value.trim()
+        });
+        const response = await fetch(`/api/videos?${params.toString()}`);
         const payload = await readApiJson(response);
         const videos = payload.videos || [];
         if (!videos.length) {
-          videoLibrary.innerHTML = '<div class="empty">생성된 영상이 없습니다</div>';
+          videoLibrary.innerHTML = '<div class="empty">검색 결과가 없습니다</div>';
           videoLibraryStatus.textContent = "0개";
           return;
         }
@@ -1379,7 +1444,8 @@
             </div>
           </div>
         `).join("");
-        videoLibraryStatus.textContent = `최근 ${videos.length}개`;
+        const typeLabel = dashboardVideoTypeFilter.options[dashboardVideoTypeFilter.selectedIndex].textContent;
+        videoLibraryStatus.textContent = `${typeLabel} ${videos.length}개`;
       } catch (error) {
         videoLibraryStatus.textContent = "영상 목록을 불러오지 못했습니다";
         console.error(error);
@@ -1616,6 +1682,16 @@
     saveBgmSettings.addEventListener("click", saveQuickBgmSettings);
 
     refreshVideoLibrary.addEventListener("click", loadVideoLibrary);
+    dashboardSearchVideoLibrary.addEventListener("click", loadVideoLibrary);
+    dashboardShowLongVideos.addEventListener("click", () => {
+      dashboardVideoTypeFilter.value = "long";
+      dashboardVideoSearchQuery.value = "";
+      loadVideoLibrary();
+    });
+    dashboardVideoTypeFilter.addEventListener("change", loadVideoLibrary);
+    dashboardVideoSearchQuery.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") loadVideoLibrary();
+    });
 
     videoLibrary.addEventListener("click", async (event) => {
       const metadataButton = event.target.closest(".youtube-meta");
@@ -1628,6 +1704,12 @@
       if (!button) return;
       button.disabled = true;
       videoLibraryStatus.textContent = "삭제 중";
+      const video = button.closest(".video-card")?.querySelector("video");
+      if (video) {
+        video.pause();
+        video.removeAttribute("src");
+        video.load();
+      }
       try {
         const response = await fetch(`/api/videos/${encodeURIComponent(button.dataset.filename)}`, {
           method: "DELETE"
@@ -1650,6 +1732,7 @@
       currentYoutubeConfig = null;
       resetUploadConfirmation();
       youtubeTitle.value = "";
+      youtubeTitleOptions.innerHTML = "";
       youtubeDescription.value = "";
       youtubeTags.value = "";
       youtubePrivacy.value = "private";
@@ -1671,6 +1754,7 @@
         if (!uploadResponse.ok) throw new Error(uploadPayload.error || `HTTP ${uploadResponse.status}`);
         const metadata = payload.metadata;
         youtubeTitle.value = metadata.title || "";
+        youtubeTitleOptions.innerHTML = (metadata.title_options || []).map((title, index) => `<button type="button" class="mini-button title-option" data-title-option="${escapeText(title)}">${String.fromCharCode(65 + index)}. ${escapeText(title)}</button>`).join("");
         youtubeDescription.value = metadata.description || "";
         youtubeTags.value = (metadata.tags || []).join(", ");
         metadataStatus.textContent = metadata.filename || filename;
@@ -1689,6 +1773,13 @@
       await navigator.clipboard.writeText(value);
       metadataStatus.textContent = statusTextValue;
     }
+
+    youtubeTitleOptions.addEventListener("click", (event) => {
+      const option = event.target.closest("[data-title-option]");
+      if (!option) return;
+      youtubeTitle.value = option.dataset.titleOption || "";
+      resetUploadConfirmation();
+    });
 
     function resetUploadConfirmation() {
       uploadArmed = false;
@@ -2107,9 +2198,11 @@
         ttsPreviewAudio.src = `${payload.audio_url}?t=${Date.now()}`;
         ttsPreviewAudio.style.display = "block";
         await ttsPreviewAudio.play().catch(() => {});
-        const voiceText = payload.voice !== payload.requested_voice
-          ? (payload.requested_voice === "random" ? ` / 선택 음성: ${payload.voice}` : " / 기본 음성으로 재시도됨")
-          : "";
+        const voiceText = payload.provider === "elevenlabs"
+          ? ` / 선택 음성: ${payload.voice} / Flash v2.5`
+          : (payload.voice !== payload.requested_voice
+            ? (payload.requested_voice === "random" ? ` / 선택 음성: ${payload.voice}` : " / 기본 음성으로 재시도됨")
+            : "");
         videoStatus.textContent = `음성 미리듣기 준비 완료 (${Math.round(payload.duration)}초${voiceText})`;
       } catch (error) {
         videoStatus.textContent = error.message || "음성 미리듣기 실패";

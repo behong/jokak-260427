@@ -26,6 +26,14 @@ PIPELINES: dict[str, VideoPipeline] = {
         script_generator=generate_video_script,
         renderer=render_video,
     ),
+    "글반장모음": VideoPipeline(
+        source="글반장모음",
+        label="문장형 쇼츠",
+        description="CSV로 보충한 글반장 모음 글을 영상으로 제작",
+        enabled=True,
+        script_generator=generate_video_script,
+        renderer=render_video,
+    ),
     "직접입력": VideoPipeline(
         source="직접입력",
         label="수동 좋은글 쇼츠",

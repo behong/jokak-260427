@@ -111,6 +111,18 @@
       margin-bottom: 14px;
     }
 
+    .library-filters {
+      display: grid;
+      grid-template-columns: minmax(220px, 1fr) auto;
+      gap: 10px;
+      align-items: end;
+      margin-bottom: 14px;
+    }
+
+    .library-filters label {
+      margin: 0 0 6px;
+    }
+
     .video-grid {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -248,9 +260,9 @@
       min-height: 20px;
     }
 
-    .long-video-bar {
+    .cleanup-panel {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) 120px auto;
+      grid-template-columns: minmax(220px, 1fr) repeat(5, minmax(110px, auto));
       gap: 10px;
       align-items: end;
       margin-bottom: 14px;
@@ -258,15 +270,36 @@
       border-bottom: 1px solid var(--line);
     }
 
-    .long-video-bar label {
+    .cleanup-panel label {
       margin: 0 0 6px;
     }
 
-    .long-video-status {
+    .cleanup-stats {
       color: var(--muted);
       font-size: 13px;
       line-height: 1.5;
       overflow-wrap: anywhere;
+    }
+
+    .cleanup-stat {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px 10px;
+      background: #f8fafc;
+      min-height: 58px;
+    }
+
+    .cleanup-stat strong {
+      margin: 0;
+      font-size: 16px;
+      line-height: 1.25;
+    }
+
+    .cleanup-stat span {
+      display: block;
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
     }
 
     .modal {
@@ -362,7 +395,8 @@
         align-items: stretch;
         flex-direction: column;
       }
-      .long-video-bar {
+      .library-filters,
+      .cleanup-panel {
         grid-template-columns: 1fr;
       }
       .video-grid { grid-template-columns: 1fr; }
@@ -383,31 +417,30 @@
       </form>
       {% endif %}
     </div>
-    <nav class="top-menu" aria-label="상단 메뉴">
-      <a href="/">대시보드</a>
-      <a href="/manual">수동 좋은글</a>
-      <a class="active" href="/generated-videos">생성영상</a>
-      <a href="/background-library">배경영상</a>
-      <a href="/settings">운영 설정</a>
-    </nav>
+    {% include "_top_menu.html" %}
   </header>
 
   <main>
     <section class="panel" aria-label="생성영상">
-      <div class="long-video-bar">
+      <div class="cleanup-panel" aria-label="영상 정리">
         <div>
-          <label>업로드 완료 영상 묶기</label>
-          <div class="long-video-status" id="longVideoStatus">이미 긴영상에 사용한 짧은 영상은 제외하고 10분 이상으로 만듭니다.</div>
+          <label>영상 자동 정리</label>
+          <div class="cleanup-stats" id="cleanupStatus">정리 상태를 불러오는 중</div>
+        </div>
+        <div class="cleanup-stat">
+          <strong id="cleanupTotalSize">-</strong>
+          <span id="cleanupTotalCount">전체 영상</span>
+        </div>
+        <div class="cleanup-stat">
+          <strong id="cleanupCandidateSize">-</strong>
+          <span id="cleanupCandidateCount">정리 대상</span>
         </div>
         <div>
-          <label for="longVideoCount">최대 개수</label>
-          <select id="longVideoCount">
-            <option value="40" selected>40개</option>
-            <option value="30">30개</option>
-            <option value="20">20개</option>
-          </select>
+          <label for="cleanupRetentionDays">보관 기간</label>
+          <input id="cleanupRetentionDays" type="number" min="1" max="365" step="1" value="14">
         </div>
-        <button class="secondary" type="button" id="createLongVideo">긴영상 만들기</button>
+        <button class="secondary" type="button" id="refreshCleanup">미리보기</button>
+        <button type="button" id="runCleanup">지금 정리</button>
       </div>
       <div class="section-title">
         <div>
@@ -415,6 +448,21 @@
           <div class="subtle" id="videoLibraryStatus">불러오는 중</div>
         </div>
         <button class="secondary" type="button" id="refreshVideoLibrary">새로고침</button>
+      </div>
+      <div class="library-filters" aria-label="생성영상 검색">
+        <div>
+          <label for="videoSearchQuery">검색어</label>
+          <input id="videoSearchQuery" type="search" placeholder="제목 또는 파일명 검색">
+        </div>
+        <div>
+          <label for="videoType">영상 종류</label>
+          <select id="videoType">
+            <option value="short" selected>짧은영상</option>
+            <option value="long">롱영상</option>
+            <option value="all">전체 영상</option>
+          </select>
+        </div>
+        <button class="secondary" type="button" id="searchVideoLibrary">검색</button>
       </div>
       <div class="video-grid" id="videoLibrary"></div>
       <div class="status" id="pageStatus"></div>
@@ -467,10 +515,18 @@
     const videoLibrary = document.querySelector("#videoLibrary");
     const videoLibraryStatus = document.querySelector("#videoLibraryStatus");
     const refreshVideoLibrary = document.querySelector("#refreshVideoLibrary");
+    const videoSearchQuery = document.querySelector("#videoSearchQuery");
+    const videoType = document.querySelector("#videoType");
+    const searchVideoLibrary = document.querySelector("#searchVideoLibrary");
     const pageStatus = document.querySelector("#pageStatus");
-    const longVideoStatus = document.querySelector("#longVideoStatus");
-    const longVideoCount = document.querySelector("#longVideoCount");
-    const createLongVideo = document.querySelector("#createLongVideo");
+    const cleanupStatus = document.querySelector("#cleanupStatus");
+    const cleanupTotalSize = document.querySelector("#cleanupTotalSize");
+    const cleanupTotalCount = document.querySelector("#cleanupTotalCount");
+    const cleanupCandidateSize = document.querySelector("#cleanupCandidateSize");
+    const cleanupCandidateCount = document.querySelector("#cleanupCandidateCount");
+    const cleanupRetentionDays = document.querySelector("#cleanupRetentionDays");
+    const refreshCleanup = document.querySelector("#refreshCleanup");
+    const runCleanup = document.querySelector("#runCleanup");
     const metadataModal = document.querySelector("#metadataModal");
     const closeMetadataModal = document.querySelector("#closeMetadataModal");
     const metadataStatus = document.querySelector("#metadataStatus");
@@ -530,6 +586,57 @@
       return video.filename;
     }
 
+    function renderCleanupSummary(payload) {
+      cleanupRetentionDays.value = payload.retention_days || 14;
+      cleanupTotalSize.textContent = formatBytes(payload.total_size);
+      cleanupTotalCount.textContent = `전체 ${payload.total_count || 0}개`;
+      cleanupCandidateSize.textContent = formatBytes(payload.candidate_size);
+      cleanupCandidateCount.textContent = `정리 대상 ${payload.candidate_count || 0}개`;
+      const lastRun = payload.last_run_date || "기록 없음";
+      const enabled = payload.enabled ? "자동 정리 켜짐" : "자동 정리 꺼짐";
+      cleanupStatus.textContent = `${enabled} / 마지막 실행 ${lastRun} / ${payload.protected_note || ""}`;
+    }
+
+    async function loadCleanupSummary() {
+      cleanupStatus.textContent = "정리 상태를 불러오는 중";
+      const params = new URLSearchParams({
+        retention_days: cleanupRetentionDays.value || "14"
+      });
+      const response = await fetch(`/api/videos/cleanup?${params.toString()}`);
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+      renderCleanupSummary(payload);
+    }
+
+    async function runVideoCleanup() {
+      const retentionDays = Number(cleanupRetentionDays.value || 14);
+      if (!Number.isFinite(retentionDays) || retentionDays < 1) {
+        cleanupStatus.textContent = "보관 기간을 1일 이상으로 입력하세요";
+        return;
+      }
+      if (!confirm(`${retentionDays}일 지난 업로드 완료 영상을 정리할까요?`)) {
+        return;
+      }
+      runCleanup.disabled = true;
+      cleanupStatus.textContent = "정리 실행 중";
+      try {
+        const response = await fetch("/api/videos/cleanup", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ retention_days: retentionDays })
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+        renderCleanupSummary(payload.summary);
+        cleanupStatus.textContent = `정리 완료: ${payload.result.deleted_count || 0}개 / ${formatBytes(payload.result.candidate_size)} 확보`;
+        await loadVideoLibrary();
+      } catch (error) {
+        cleanupStatus.textContent = error.message || "정리 실패";
+      } finally {
+        runCleanup.disabled = false;
+      }
+    }
+
     function openModal(modal) {
       scrollYBeforeModal = window.scrollY;
       document.body.style.top = `-${scrollYBeforeModal}px`;
@@ -549,12 +656,17 @@
     async function loadVideoLibrary() {
       videoLibraryStatus.textContent = "불러오는 중";
       try {
-        const response = await fetch("/api/videos?limit=50");
+        const params = new URLSearchParams({
+          limit: "50",
+          type: videoType.value,
+          q: videoSearchQuery.value.trim()
+        });
+        const response = await fetch(`/api/videos?${params.toString()}`);
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
         const videos = payload.videos || [];
         if (!videos.length) {
-          videoLibrary.innerHTML = '<div class="empty">생성된 영상이 없습니다</div>';
+          videoLibrary.innerHTML = '<div class="empty">검색 결과가 없습니다</div>';
           videoLibraryStatus.textContent = "0개";
           return;
         }
@@ -571,51 +683,13 @@
             </div>
           </div>
         `).join("");
-        videoLibraryStatus.textContent = `최근 ${videos.length}개`;
+        const typeLabel = videoType.value === "long" ? "롱영상" : videoType.value === "short" ? "짧은영상" : "전체 영상";
+        videoLibraryStatus.textContent = `${typeLabel} ${videos.length}개`;
       } catch (error) {
         videoLibraryStatus.textContent = "영상 목록을 불러오지 못했습니다";
         console.error(error);
       }
     }
-
-    async function pollLongVideoJob(jobId) {
-      for (;;) {
-        await new Promise((resolve) => setTimeout(resolve, 2500));
-        const response = await fetch(`/api/long-videos/jobs/${jobId}`);
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
-        const job = payload.job;
-        longVideoStatus.textContent = `${job.stage || job.status} (${job.progress || 0}%)`;
-        if (job.status === "ready") {
-          longVideoStatus.innerHTML = `긴영상 생성 완료: <a href="${escapeText(job.video_url)}" target="_blank" rel="noreferrer">${escapeText(job.video_url)}</a>`;
-          await loadVideoLibrary();
-          return job;
-        }
-        if (job.status === "failed") {
-          throw new Error(job.error || "긴영상 생성 실패");
-        }
-      }
-    }
-
-    createLongVideo.addEventListener("click", async () => {
-      createLongVideo.disabled = true;
-      longVideoStatus.textContent = "긴영상 생성 요청 중";
-      try {
-        const response = await fetch("/api/long-videos/create", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ count: longVideoCount.value })
-        });
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
-        await pollLongVideoJob(payload.job.id);
-      } catch (error) {
-        longVideoStatus.textContent = error.message || "긴영상 생성 실패";
-        console.error(error);
-      } finally {
-        createLongVideo.disabled = false;
-      }
-    });
 
     videoLibrary.addEventListener("click", async (event) => {
       const metadataButton = event.target.closest(".youtube-meta");
@@ -629,6 +703,12 @@
       if (!confirm("이 영상을 삭제할까요?")) return;
       button.disabled = true;
       pageStatus.textContent = "삭제 중";
+      const video = button.closest(".video-card")?.querySelector("video");
+      if (video) {
+        video.pause();
+        video.removeAttribute("src");
+        video.load();
+      }
       try {
         const response = await fetch(`/api/videos/${encodeURIComponent(button.dataset.filename)}`, {
           method: "DELETE"
@@ -911,6 +991,20 @@
       if (event.key === "Escape") hideMetadataModal();
     });
     refreshVideoLibrary.addEventListener("click", loadVideoLibrary);
+    refreshCleanup.addEventListener("click", () => {
+      loadCleanupSummary().catch((error) => {
+        cleanupStatus.textContent = error.message || "정리 상태 로드 실패";
+      });
+    });
+    runCleanup.addEventListener("click", runVideoCleanup);
+    searchVideoLibrary.addEventListener("click", loadVideoLibrary);
+    videoType.addEventListener("change", loadVideoLibrary);
+    videoSearchQuery.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") loadVideoLibrary();
+    });
+    loadCleanupSummary().catch((error) => {
+      cleanupStatus.textContent = error.message || "정리 상태 로드 실패";
+    });
     loadVideoLibrary();
   </script>
 </body>

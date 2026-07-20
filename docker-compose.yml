@@ -10,6 +10,8 @@ x-jokak-app: &jokak-app
   environment:
     PYTHONUNBUFFERED: "1"
   restart: unless-stopped
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
   volumes:
     - ./.env.docker:/app/.env:ro
     - ./telegram_logs.sqlite3:/app/telegram_logs.sqlite3

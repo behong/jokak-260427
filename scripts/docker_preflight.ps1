@@ -25,11 +25,32 @@ function Check-Path {
 
 $script:HasError = $false
 
-if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+function Get-DockerCommand {
+    $command = Get-Command docker -ErrorAction SilentlyContinue
+    if ($command) {
+        return $command.Source
+    }
+
+    $defaultPath = "C:\Program Files\Docker\Docker\resources\bin\docker.exe"
+    if (Test-Path -LiteralPath $defaultPath) {
+        return $defaultPath
+    }
+
+    return $null
+}
+
+$Docker = Get-DockerCommand
+if (-not $Docker) {
     Write-Output "MISSING docker command"
     $script:HasError = $true
 } else {
-    docker --version
+    & $Docker --version
+    & $Docker compose version
+    & $Docker info --format "{{.ServerVersion}}"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Output "MISSING docker engine access"
+        $script:HasError = $true
+    }
 }
 
 Check-Path ".env.docker" -Required

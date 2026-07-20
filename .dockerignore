@@ -27,6 +27,7 @@ outputs/
 static/media/
 assets/backgrounds/
 assets/bgm/generated/
+assets/bgm/approved/
 vendor/
 legacy_pm2_disabled/logs/
 legacy_pm2_disabled/service/logs/

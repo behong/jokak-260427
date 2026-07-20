@@ -38,7 +38,7 @@ def _request_json(url: str, headers: dict[str, str]) -> dict[str, Any]:
         raise BackgroundAssetError(f"Pexels API connection failed: {exc.reason}") from exc
 
 
-def _best_video_file(video: dict[str, Any]) -> dict[str, Any] | None:
+def _best_video_file(video: dict[str, Any], orientation: str = "portrait") -> dict[str, Any] | None:
     files = [
         item
         for item in video.get("video_files", [])
@@ -47,33 +47,44 @@ def _best_video_file(video: dict[str, Any]) -> dict[str, Any] | None:
     if not files:
         return None
 
-    portrait_files = [
-        item
-        for item in files
-        if int(item.get("height") or 0) >= int(item.get("width") or 0)
+    landscape = orientation == "landscape"
+    oriented_files = [
+        item for item in files
+        if (
+            int(item.get("width") or 0) >= int(item.get("height") or 0)
+            if landscape
+            else int(item.get("height") or 0) >= int(item.get("width") or 0)
+        )
     ]
-    candidates = portrait_files or files
+    candidates = oriented_files or files
+    target_width, target_height = (1920, 1080) if landscape else (1080, 1920)
     return min(
         candidates,
         key=lambda item: (
-            abs(int(item.get("height") or 0) - 1920),
-            0 if int(item.get("height") or 0) >= 1080 else 1,
+            abs((int(item.get("width") or 0) / max(1, int(item.get("height") or 0))) - (target_width / target_height)),
+            0 if int(item.get("width") or 0) >= target_width and int(item.get("height") or 0) >= target_height else 1,
             0 if item.get("quality") in {"hd", "uhd"} else 1,
-            abs(int(item.get("width") or 0) - 1080),
+            abs(int(item.get("width") or 0) - target_width) + abs(int(item.get("height") or 0) - target_height),
         ),
     )
 
 
-def search_pexels_videos(query: str, per_page: int = 8, page: int = 1) -> list[dict[str, Any]]:
+def search_pexels_videos(
+    query: str,
+    per_page: int = 8,
+    page: int = 1,
+    orientation: str = "portrait",
+) -> list[dict[str, Any]]:
     api_key = pexels_api_key()
     if not api_key:
         raise BackgroundAssetError(".env에 PEXELS_API_KEY를 추가해야 검색할 수 있습니다.")
 
     clean_query = (query or "calm library").strip()[:80]
+    orientation = "landscape" if orientation == "landscape" else "portrait"
     params = urllib.parse.urlencode(
         {
             "query": clean_query,
-            "orientation": "portrait",
+            "orientation": orientation,
             "per_page": max(1, min(int(per_page), 20)),
             "page": max(1, int(page)),
         }
@@ -85,7 +96,7 @@ def search_pexels_videos(query: str, per_page: int = 8, page: int = 1) -> list[d
 
     results: list[dict[str, Any]] = []
     for video in payload.get("videos", []):
-        best_file = _best_video_file(video)
+        best_file = _best_video_file(video, orientation)
         if not best_file:
             continue
         results.append(
@@ -100,6 +111,7 @@ def search_pexels_videos(query: str, per_page: int = 8, page: int = 1) -> list[d
                 "width": int(best_file.get("width") or video.get("width") or 0),
                 "height": int(best_file.get("height") or video.get("height") or 0),
                 "duration": float(video.get("duration") or 0),
+                "orientation": orientation,
             }
         )
     return results
@@ -131,6 +143,7 @@ def save_background_asset(candidate: dict[str, Any]) -> dict[str, Any]:
 
     provider_id = str(candidate.get("provider_id") or "").strip()
     download_url = str(candidate.get("download_url") or "").strip()
+    collection = str(candidate.get("collection") or "").strip()[:80] or None
     if not provider_id or not download_url:
         raise BackgroundAssetError("다운로드할 영상 정보가 부족합니다.")
 
@@ -147,8 +160,8 @@ def save_background_asset(candidate: dict[str, Any]) -> dict[str, Any]:
             """
             INSERT INTO background_assets
                 (provider, provider_id, query, author, source_url, preview_url,
-                 local_path, width, height, duration)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 local_path, width, height, duration, collection)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(provider, provider_id) DO UPDATE SET
                 query = excluded.query,
                 author = excluded.author,
@@ -157,7 +170,8 @@ def save_background_asset(candidate: dict[str, Any]) -> dict[str, Any]:
                 local_path = excluded.local_path,
                 width = excluded.width,
                 height = excluded.height,
-                duration = excluded.duration
+                duration = excluded.duration,
+                collection = COALESCE(excluded.collection, background_assets.collection)
             """,
             (
                 "pexels",
@@ -170,6 +184,7 @@ def save_background_asset(candidate: dict[str, Any]) -> dict[str, Any]:
                 int(candidate.get("width") or 0),
                 int(candidate.get("height") or 0),
                 float(candidate.get("duration") or 0),
+                collection,
             ),
         )
         conn.commit()
@@ -227,6 +242,38 @@ def list_background_assets(limit: int = 50, active_only: bool = False) -> list[d
     return [_asset_payload(row) for row in rows]
 
 
+def list_background_assets_for_collection(
+    collection: str,
+    *,
+    landscape_only: bool = False,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    init_db(DB_PATH)
+    with closing(connect(DB_PATH)) as conn:
+        rows = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT id, provider, provider_id, query, author, source_url, preview_url,
+                       local_path, width, height, duration, enabled, collection, created_at
+                FROM background_assets
+                WHERE collection = ?
+                  AND (
+                    ? = 0 OR (
+                      COALESCE(width, 0) > COALESCE(height, 0)
+                      AND width * 10 >= height * 15
+                      AND width * 10 <= height * 20
+                    )
+                  )
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (collection.strip()[:80], 1 if landscape_only else 0, max(1, min(int(limit), 500))),
+            )
+        ]
+    return [_asset_payload(row) for row in rows]
+
+
 def update_background_asset(
     asset_id: int,
     enabled: bool | None = None,
@@ -277,7 +324,13 @@ def activate_background_collection(collection: str) -> dict[str, Any]:
         raise BackgroundAssetError("활성화할 분류를 선택하세요.")
     init_db(DB_PATH)
     with closing(connect(DB_PATH)) as conn:
-        conn.execute("UPDATE background_assets SET enabled = 0")
+        if clean_collection == "longform-16x9":
+            conn.execute("UPDATE background_assets SET enabled = 0 WHERE collection = ?", (clean_collection,))
+        else:
+            conn.execute(
+                "UPDATE background_assets SET enabled = 0 WHERE COALESCE(collection, '') != ?",
+                ("longform-16x9",),
+            )
         conn.execute(
             """
             UPDATE background_assets

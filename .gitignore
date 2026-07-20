@@ -19,6 +19,7 @@ static/media/
 outputs/
 assets/backgrounds/
 assets/bgm/generated/
+assets/bgm/approved/
 vendor/
 .tmp/
 __pycache__/

@@ -1,0 +1,99 @@
+longform:
+  enabled: true
+  duration_minutes: 20
+  resolution: 1920x1080
+  fps: 30
+
+  schedule:
+    enabled: true
+    time: 03:10
+    days: [0, 1, 2, 3, 4, 5, 6]
+    theme_mode: rotate
+    skip_when_busy: true
+    window_minutes: 30
+    render_preset: veryfast
+    render_crf: 20
+    render_threads: 2
+
+  script:
+    theme: 오늘도 애쓴 당신에게
+    tone: calm
+    intro_seconds: 25
+    outro_seconds: 30
+
+  tts:
+    provider: edge
+    voice: ko-KR-HyunsuMultilingualNeural
+    comparison_voice: ko-KR-HyunsuNeural
+    speed: 0.80
+    pitch: 0
+    sentence_pause: 0.9
+    paragraph_pause: 1.8
+    style: calm
+    volume: 1.0
+    elevenlabs:
+      voice_id: ksaI0TCD9BstzEzlxj4q
+      comparison_voice_id: jB1Cifc2UQbq1gR3wnb0
+      saved_voices:
+        여자 · 1순위: ksaI0TCD9BstzEzlxj4q
+        남자 · 2순위: jB1Cifc2UQbq1gR3wnb0
+        내 목소리 · 3순위: 5A7p8A1zreJtDuUUDbcb
+      model_id: eleven_multilingual_v2
+      language_code: ko
+      output_format: mp3_44100_128
+      stability: 0.65
+      similarity_boost: 0.75
+      style: 0.05
+      speed: 0.90
+      speaker_boost: true
+
+  background:
+    type: video
+    source_dir: ./assets/healing/videos
+    collection: longform-16x9
+    mode: sequence
+    specific_file: ''
+    transition: crossfade
+    transition_seconds: 2.5
+    random: true
+    clip_count: 6
+    intro_seconds: 25
+
+  music:
+    enabled: true
+    source_dir: ./assets/bgm
+    nature_source_dir: ./assets/healing/nature
+    specific_file: ''
+    mode: music
+    volume: 0.15
+    ducking: true
+    fade_in_seconds: 3
+    fade_out_seconds: 5
+
+  subtitles:
+    enabled: true
+    max_lines: 2
+    position: bottom
+    font_size: 16
+
+  overlays:
+    show_title: true
+    show_key_phrase: true
+    show_channel: true
+    show_logo: false
+    show_subscribe_cta: true
+    channel_name: 지혜로운 조각들
+    logo_path: ''
+    title_font_size: 32
+    key_phrase_font_size: 25
+    channel_font_size: 21
+    cta_font_size: 24
+
+  output:
+    format: mp4
+    codec: h264
+    audio_codec: aac
+    directory: ./outputs/longform
+    preset: medium
+    crf: 16
+    threads: 0

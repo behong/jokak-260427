@@ -89,7 +89,8 @@ $manifest = @(
     "3. Run: python -m venv .venv",
     "4. Run: .\.venv\Scripts\Activate.ps1",
     "5. Run: pip install -r requirements.txt",
-    "6. Run: .\scripts\start_managed.ps1"
+    "6. Run: pm2 restart jijogak-monitor --update-env",
+    "7. Run: pm2 restart jijogak-dashboard --update-env"
 )
 $manifest | Set-Content -LiteralPath $ManifestPath -Encoding UTF8
 

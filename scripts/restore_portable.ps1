@@ -27,7 +27,8 @@ Next commands:
   python -m venv .venv
   .\.venv\Scripts\Activate.ps1
   pip install -r requirements.txt
-  .\scripts\start_managed.ps1
+  pm2 restart jijogak-monitor --update-env
+  pm2 restart jijogak-dashboard --update-env
 
 Open dashboard:
   http://127.0.0.1:8050

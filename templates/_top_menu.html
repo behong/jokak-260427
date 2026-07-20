@@ -1,0 +1,9 @@
+<nav class="top-menu" aria-label="상단 메뉴">
+  <a{% if request.path == '/' %} class="active"{% endif %} href="/">대시보드</a>
+  <a{% if request.path == '/manual' %} class="active"{% endif %} href="/manual">수동 좋은글</a>
+  <a{% if request.path == '/generated-videos' %} class="active"{% endif %} href="/generated-videos">생성영상</a>
+  <a{% if request.path == '/long-videos' %} class="active"{% endif %} href="/long-videos">힐링 롱폼</a>
+  <a{% if request.path == '/longform-backgrounds' %} class="active"{% endif %} href="/longform-backgrounds">롱폼 배경</a>
+  <a{% if request.path == '/background-library' %} class="active"{% endif %} href="/background-library">쇼츠 배경</a>
+  <a{% if request.path == '/settings' %} class="active"{% endif %} href="/settings">운영 설정</a>
+</nav>

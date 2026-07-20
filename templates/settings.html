@@ -216,13 +216,7 @@
       </form>
       {% endif %}
     </div>
-    <nav class="top-menu" aria-label="상단 메뉴">
-      <a href="/">대시보드</a>
-      <a href="/manual">수동 좋은글</a>
-      <a href="/generated-videos">생성영상</a>
-      <a href="/background-library">배경영상</a>
-      <a class="active" href="/settings">운영 설정</a>
-    </nav>
+    {% include "_top_menu.html" %}
   </header>
 
   <main>
@@ -251,6 +245,32 @@
           <input id="settingPexelsApiKey" data-setting="PEXELS_API_KEY" type="password" autocomplete="new-password" placeholder="변경할 때만 입력">
         </div>
         <div class="field">
+          <label for="settingElevenLabsApiKey">ElevenLabs API Key</label>
+          <input id="settingElevenLabsApiKey" data-setting="ELEVENLABS_API_KEY" type="password" autocomplete="new-password" placeholder="변경할 때만 입력">
+        </div>
+        <div class="field">
+          <label for="settingElevenLabsVoiceId">ElevenLabs 기본 Voice ID</label>
+          <input id="settingElevenLabsVoiceId" data-setting="ELEVENLABS_VOICE_ID" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="settingShortTtsProvider">숏폼 TTS</label>
+          <select id="settingShortTtsProvider" data-setting="SHORT_TTS_PROVIDER">
+            <option value="elevenlabs">ElevenLabs 인기 한국어 음성 랜덤</option>
+            <option value="edge">Microsoft Edge 무료</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="settingShortElevenModel">숏폼 ElevenLabs 모델</label>
+          <select id="settingShortElevenModel" data-setting="SHORT_ELEVENLABS_MODEL_ID">
+            <option value="eleven_flash_v2_5">Flash v2.5 · 0.5크레딧/자</option>
+            <option value="eleven_multilingual_v2">Multilingual v2 · 1크레딧/자</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="settingShortVoicePool">숏폼 랜덤 음성</label>
+          <input id="settingShortVoicePool" value="여성 Anna Kim·Jennie / 남성 Hyuk·Chris" readonly>
+        </div>
+        <div class="field">
           <label for="settingDashboardPassword">대시보드 비밀번호</label>
           <input id="settingDashboardPassword" data-setting="DASHBOARD_PASSWORD" type="password" autocomplete="new-password" placeholder="변경할 때만 입력">
         </div>
@@ -269,6 +289,14 @@
         <div class="field">
           <label for="settingAutoUploadWindows">쇼츠 예약 시간대</label>
           <input id="settingAutoUploadWindows" data-setting="AUTO_UPLOAD_SCHEDULE_WINDOWS" placeholder="07:30-09:00,12:00-13:30,18:00-23:00">
+        </div>
+        <div class="field">
+          <label for="settingLongformUploadTimes">롱폼 예약 시각</label>
+          <input id="settingLongformUploadTimes" data-setting="LONGFORM_UPLOAD_SCHEDULE_TIMES" placeholder="20:30,21:00">
+        </div>
+        <div class="field">
+          <label for="settingLongformPlaylist">롱폼 재생목록</label>
+          <input id="settingLongformPlaylist" data-setting="LONGFORM_YOUTUBE_PLAYLIST_NAME" placeholder="잠들기 전 듣는 힐링 낭독">
         </div>
         <div class="field">
           <label for="settingAutoUploadMax">회당 처리 개수</label>
@@ -299,6 +327,42 @@
           <input id="settingAutoUploadRetry" data-setting="AUTO_UPLOAD_RETRY_FAILED" type="checkbox">
         </div>
         <div class="field">
+          <label for="settingNaverClipEnabled">Naver Clip 자동 업로드</label>
+          <input id="settingNaverClipEnabled" data-setting="NAVER_CLIP_AUTO_UPLOAD_ENABLED" type="checkbox">
+        </div>
+        <div class="field">
+          <label for="settingNaverClipApiUrl">Naver Clip API URL</label>
+          <input id="settingNaverClipApiUrl" data-setting="NAVER_CLIP_API_URL" placeholder="http://host.docker.internal:8383/upload_clip">
+        </div>
+        <div class="field">
+          <label for="settingNaverClipChannelUrl">Naver 채널 URL</label>
+          <input id="settingNaverClipChannelUrl" data-setting="NAVER_CLIP_CHANNEL_URL" placeholder="https://creator.tv.naver.com/channel/wisearchive/content/video">
+        </div>
+        <div class="field">
+          <label for="settingNaverClipHostVideoRoot">호스트 영상 루트</label>
+          <input id="settingNaverClipHostVideoRoot" data-setting="NAVER_CLIP_HOST_VIDEO_ROOT" placeholder="C:\Users\Administrator\code\jokak-260427">
+        </div>
+        <div class="field">
+          <label for="settingNaverClipCategory1">Naver 카테고리 1</label>
+          <input id="settingNaverClipCategory1" data-setting="NAVER_CLIP_CATEGORY1" placeholder="인문, 교양">
+        </div>
+        <div class="field">
+          <label for="settingNaverClipCategory2">Naver 카테고리 2</label>
+          <input id="settingNaverClipCategory2" data-setting="NAVER_CLIP_CATEGORY2" placeholder="인문, 교양">
+        </div>
+        <div class="field">
+          <label for="settingNaverClipKeepOpen">Naver 유지 시간(초)</label>
+          <input id="settingNaverClipKeepOpen" data-setting="NAVER_CLIP_KEEP_OPEN_SECONDS" type="number" min="0" max="300" step="1">
+        </div>
+        <div class="field">
+          <label for="settingNaverClipDailyLimit">Naver 일일 제한</label>
+          <input id="settingNaverClipDailyLimit" data-setting="NAVER_CLIP_DAILY_LIMIT" type="number" min="1" max="50" step="1">
+        </div>
+        <div class="field">
+          <label for="settingNaverClipSchedule">Naver 예약 시간대</label>
+          <input id="settingNaverClipSchedule" data-setting="NAVER_CLIP_SCHEDULE_WINDOW" placeholder="06:00-09:00">
+        </div>
+        <div class="field">
           <label for="settingSaramroEnabled">사람로 보충 수집</label>
           <input id="settingSaramroEnabled" data-setting="SARAMRO_QUOTES_ENABLED" type="checkbox">
         </div>
@@ -313,6 +377,10 @@
         <div class="field">
           <label for="settingBgmEnabled">BGM 자동 삽입</label>
           <input id="settingBgmEnabled" data-setting="VIDEO_BGM_ENABLED" type="checkbox">
+        </div>
+        <div class="field">
+          <label for="settingBgmAllowUnverified">출처 미확인 BGM 허용</label>
+          <input id="settingBgmAllowUnverified" data-setting="VIDEO_BGM_ALLOW_UNVERIFIED" type="checkbox">
         </div>
         <div class="field">
           <label for="settingBgmTtsVolume">BGM 볼륨(TTS)</label>

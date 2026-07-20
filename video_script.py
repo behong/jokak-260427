@@ -4,7 +4,8 @@ import math
 import re
 
 
-SOURCE_PATTERN = re.compile(r"^\s*[-–—]?\s*(출처|Source)\s*[:：]?\s*(.+?)\s*$", re.IGNORECASE)
+SOURCE_PATTERN = re.compile(r"^\s*[-—–]?\s*(출처|Source)\s*[:：]?\s*(.+?)\s*$", re.IGNORECASE)
+TRACKING_NUMBER_PATTERN = re.compile(r"(?<!\w)#\d+(?:_\d+)?\b")
 BRAND_NAME = "지혜로운 조각들"
 MAX_LINES_PER_PAGE = 3
 MAX_CHARS_PER_LINE = 15
@@ -18,7 +19,18 @@ def normalize_text(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
+def remove_tracking_number_lines(content: str) -> str:
+    lines = content.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    cleaned_lines = []
+    for line in lines:
+        cleaned = normalize_text(TRACKING_NUMBER_PATTERN.sub("", line))
+        if cleaned:
+            cleaned_lines.append(cleaned)
+    return "\n".join(cleaned_lines).strip()
+
+
 def split_source(content: str) -> tuple[str, str]:
+    content = remove_tracking_number_lines(content)
     lines = [
         line.strip()
         for line in content.replace("\r\n", "\n").replace("\r", "\n").split("\n")

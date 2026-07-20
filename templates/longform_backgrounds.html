@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>롱폼 배경 관리</title>
+  <style>
+    :root{--bg:#f4f6f8;--panel:#fff;--text:#17202a;--muted:#667085;--line:#d7dde5;--accent:#1769aa;--soft:#e7f0f8;--danger:#b42318}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px "Segoe UI",system-ui,sans-serif}body.modal-open{overflow:hidden}
+    header{background:#fff;border-bottom:1px solid var(--line);padding:18px 24px}h1{margin:0 0 4px;font-size:23px}h2{margin:0;font-size:18px}.subtle,.status{color:var(--muted);font-size:13px;line-height:1.5}.top-menu,.actions{display:flex;gap:8px;flex-wrap:wrap}.top-menu{margin-top:14px}
+    a,button{display:inline-flex;align-items:center;justify-content:center;min-height:35px;border:1px solid var(--line);border-radius:7px;padding:0 12px;background:#fff;color:var(--text);text-decoration:none;font:inherit;font-weight:700;cursor:pointer}a.active,button.primary{border-color:var(--accent);background:var(--accent);color:#fff}button:disabled{opacity:.55;cursor:wait}
+    main{width:min(1320px,100%);margin:auto;padding:20px 24px 40px}.panel{background:#fff;border:1px solid var(--line);border-radius:8px;padding:16px;margin-bottom:16px}.section-title{display:flex;justify-content:space-between;gap:12px;align-items:start;margin-bottom:14px}
+    .search-row{display:grid;grid-template-columns:minmax(180px,.6fr) minmax(260px,1fr) auto auto;gap:8px;align-items:end}label{display:block;color:var(--muted);font-size:12px;margin-bottom:6px}input,select{width:100%;height:39px;border:1px solid var(--line);border-radius:7px;padding:9px 10px;background:#fff;font:inherit}.search-row button{height:39px}
+    .stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:12px}.stat{border:1px solid var(--line);padding:10px}.stat span{display:block;color:var(--muted);font-size:12px}.stat strong{display:block;font-size:21px;margin-top:4px}
+    .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}.card{border:1px solid var(--line);border-radius:8px;overflow:hidden;background:#fff}.card.active{border-color:var(--accent)}.thumb{width:100%;aspect-ratio:16/9;object-fit:cover;display:block;background:#e9edf1}.card-body{padding:10px}.card strong{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.meta{color:var(--muted);font-size:12px;margin:4px 0 9px}.badge{display:inline-flex;align-items:center;min-height:25px;border-radius:6px;padding:0 8px;background:var(--soft);color:var(--accent);font-size:12px;font-weight:700}.badge.off{background:#f2f4f7;color:var(--muted)}.empty{grid-column:1/-1;padding:30px;text-align:center;color:var(--muted)}
+    .modal{position:fixed;inset:0;z-index:10;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.84);padding:24px}.modal.open{display:flex}.modal video{width:min(1100px,100%);max-height:82vh;aspect-ratio:16/9;background:#000}.close{position:fixed;top:18px;right:18px}
+    @media(max-width:760px){header,main{padding:16px}.section-title{flex-direction:column}.search-row,.stats{grid-template-columns:1fr}.search-row button{width:100%}}
+  </style>
+</head>
+<body>
+<header>
+  <h1>롱폼 배경 관리</h1>
+  <div class="subtle">1920×1080에 맞는 가로 영상만 별도로 가져와 롱폼에 사용합니다.</div>
+  {% include "_top_menu.html" %}
+</header>
+<main>
+  <section class="panel">
+    <div class="section-title"><div><h2>가로 영상 가져오기</h2><div class="subtle">검색 결과를 확인해 한 개씩 가져오거나, 앞의 4개를 한 번에 가져옵니다.</div></div><span class="badge">longform-16x9</span></div>
+    <div class="search-row">
+      <div><label for="category">대본 분위기</label><select id="category"><option value="morning">아침·새출발</option><option value="comfort" selected>하루 끝·위로</option><option value="night">잠들기 전·복잡한 밤</option><option value="recovery">관계 피로·회복</option><option value="calm">걱정·불안 안정</option></select></div>
+      <div><label for="query">Pexels 검색어</label><input id="query" value="warm sunset field peaceful"></div>
+      <button id="search">검색</button><button class="primary" id="importFour">4개 일괄 가져오기</button>
+    </div>
+    <div class="status" id="status" style="margin-top:10px">준비되었습니다.</div>
+  </section>
+
+  <section class="panel">
+    <div class="section-title"><div><h2 id="listTitle">보유한 롱폼 배경</h2><div class="subtle">사용 제외한 영상은 파일을 보관하지만 샘플과 본편에서 선택하지 않습니다.</div></div><button id="showLibrary">보유 목록 새로고침</button></div>
+    <div class="stats">
+      <div class="stat"><span>전체</span><strong id="total">0</strong></div>
+      <div class="stat"><span>사용</span><strong id="active">0</strong></div>
+      <div class="stat"><span>제외</span><strong id="inactive">0</strong></div>
+    </div>
+    <div class="grid" id="grid" style="margin-top:12px"></div>
+  </section>
+</main>
+
+<div class="modal" id="preview" aria-hidden="true"><button class="close" id="closePreview">닫기</button><video id="previewVideo" controls autoplay></video></div>
+
+<script>
+  const $=selector=>document.querySelector(selector);let searchResults=[];
+  const categoryLabels={morning:'아침·새출발',comfort:'하루 끝·위로',night:'잠들기 전·밤',recovery:'관계 피로·회복',calm:'걱정·불안 안정'};
+  const categoryQueries={morning:'bright sunrise meadow nature',comfort:'warm sunset field peaceful',night:'warm candle cozy evening',recovery:'sunlit forest path peaceful nature',calm:'calm water clouds peaceful lake'};
+  const esc=value=>String(value??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;');
+  async function json(response){const payload=await response.json();if(!response.ok)throw new Error(payload.error||`HTTP ${response.status}`);return payload}
+  function meta(item,category=''){const size=item.width&&item.height?`${item.width}×${item.height}`:'크기 미상';const seconds=item.duration?`${Math.round(item.duration)}초`:'길이 미상';const match=String(item.query||'').match(/^theme:([a-z]+)\s*\|/);const label=categoryLabels[category||match?.[1]];return `${label?`${label} · `:''}${size} · ${seconds}`}
+  function showError(error){$('#status').textContent=error.message||String(error)}
+  function openPreview(url){if(!url)return;$('#previewVideo').src=url;$('#preview').classList.add('open');$('#preview').setAttribute('aria-hidden','false');document.body.classList.add('modal-open')}
+  function closePreview(){$('#previewVideo').pause();$('#previewVideo').removeAttribute('src');$('#previewVideo').load();$('#preview').classList.remove('open');$('#preview').setAttribute('aria-hidden','true');document.body.classList.remove('modal-open')}
+  function renderLibrary(items){$('#listTitle').textContent='보유한 롱폼 배경';$('#grid').innerHTML=items.length?items.map(item=>{const enabled=Number(item.enabled)===1;return `<article class="card ${enabled?'active':''}"><img class="thumb" src="${esc(item.preview_url||'')}" alt=""><div class="card-body"><strong>${esc(item.author||item.query||'Pexels')}</strong><div class="meta">${esc(meta(item))}</div><div class="actions"><span class="badge ${enabled?'':'off'}">${enabled?'사용 중':'사용 제외'}</span><button data-preview="${esc(item.video_url||'')}">미리보기</button><button data-toggle="${esc(item.id)}" data-enabled="${enabled?'1':'0'}">${enabled?'제외':'사용'}</button>${item.source_url?`<a href="${esc(item.source_url)}" target="_blank" rel="noreferrer">원본</a>`:''}</div></div></article>`}).join(''):'<div class="empty">아직 가져온 롱폼 배경이 없습니다.</div>'}
+  function renderSearch(items){searchResults=items;$('#listTitle').textContent='가로 영상 검색 결과';const category=$('#category').value;$('#grid').innerHTML=items.length?items.map((item,index)=>`<article class="card"><img class="thumb" src="${esc(item.preview_url||'')}" alt=""><div class="card-body"><strong>${esc(item.author||'Pexels')}</strong><div class="meta">${esc(meta(item,category))}</div><div class="actions"><button data-search-preview="${index}">미리보기</button><button class="primary" data-import="${index}">가져오기</button></div></div></article>`).join(''):'<div class="empty">검색 결과가 없습니다.</div>'}
+  async function loadLibrary(){const payload=await json(await fetch('/api/healing-longform/backgrounds'));$('#total').textContent=payload.total;$('#active').textContent=payload.active;$('#inactive').textContent=payload.total-payload.active;renderLibrary(payload.backgrounds||[]);$('#status').textContent=`롱폼 가로 배경 ${payload.total}개`}
+  async function search(){const button=$('#search'),query=$('#query').value.trim()||categoryQueries[$('#category').value];button.disabled=true;$('#status').textContent='16:9 가로 영상을 검색하고 있습니다.';try{const payload=await json(await fetch(`/api/backgrounds/search?q=${encodeURIComponent(query)}&per_page=12&orientation=landscape`));renderSearch(payload.results||[]);$('#status').textContent=`검색 결과 ${(payload.results||[]).length}개`}finally{button.disabled=false}}
+  async function importOne(index,button){const item=searchResults[index];if(!item)return;button.disabled=true;try{await json(await fetch('/api/healing-longform/backgrounds/import-one',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...item,theme_category:$('#category').value})}));$('#status').textContent='선택한 대본 분위기의 롱폼 배경으로 가져왔습니다.'}finally{button.disabled=false}}
+  async function importFour(){const button=$('#importFour'),query=$('#query').value.trim()||categoryQueries[$('#category').value];button.disabled=true;$('#status').textContent='가로 영상 4개를 다운로드하고 있습니다.';try{const payload=await json(await fetch('/api/healing-longform/backgrounds/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query,count:4,theme_category:$('#category').value})}));await loadLibrary();$('#status').textContent=`가로 영상 ${payload.count}개를 가져왔습니다.`}finally{button.disabled=false}}
+  async function toggleAsset(id,enabled){await json(await fetch(`/api/backgrounds/${encodeURIComponent(id)}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:!enabled})}));await loadLibrary()}
+  $('#grid').addEventListener('click',event=>{const preview=event.target.closest('[data-preview]');if(preview)return openPreview(preview.dataset.preview);const searchPreview=event.target.closest('[data-search-preview]');if(searchPreview)return openPreview(searchResults[Number(searchPreview.dataset.searchPreview)]?.download_url);const add=event.target.closest('[data-import]');if(add)return importOne(Number(add.dataset.import),add).catch(showError);const toggle=event.target.closest('[data-toggle]');if(toggle)toggleAsset(toggle.dataset.toggle,toggle.dataset.enabled==='1').catch(showError)});
+  $('#category').onchange=()=>{$('#query').value=categoryQueries[$('#category').value]};$('#search').onclick=()=>search().catch(showError);$('#importFour').onclick=()=>importFour().catch(showError);$('#showLibrary').onclick=()=>loadLibrary().catch(showError);$('#closePreview').onclick=closePreview;$('#preview').addEventListener('click',event=>{if(event.target===$('#preview'))closePreview()});document.addEventListener('keydown',event=>{if(event.key==='Escape')closePreview()});loadLibrary().catch(showError);
+</script>
+</body>
+</html>
