@@ -237,6 +237,7 @@ def upload_video(
     category_id: str = "22",
     publish_at: datetime | None = None,
     contains_synthetic_media: bool = False,
+    default_language: str | None = None,
 ) -> dict[str, Any]:
     if privacy_status not in {"private", "unlisted", "public"}:
         raise YouTubeUploadError("privacy_status must be private, unlisted, or public")
@@ -259,20 +260,29 @@ def upload_video(
         status_body["privacyStatus"] = "private"
         status_body["publishAt"] = publish_at_utc.isoformat().replace("+00:00", "Z")
 
+    snippet_body: dict[str, Any] = {
+        "title": title,
+        "description": description,
+        "tags": tags,
+        "categoryId": category_id,
+    }
+    if default_language:
+        snippet_body["defaultLanguage"] = default_language
+        snippet_body["defaultAudioLanguage"] = default_language
+
     body = {
-        "snippet": {
-            "title": title,
-            "description": description,
-            "tags": tags,
-            "categoryId": category_id,
-        },
+        "snippet": snippet_body,
         "status": status_body,
     }
-    media = MediaFileUpload(str(video_path), chunksize=-1, resumable=True)
+    # Large longform files can exceed a single-request timeout. 16 MiB is a
+    # YouTube-compatible multiple of 256 KiB and keeps the resumable session
+    # moving without loading multi-gigabyte videos as one request.
+    media = MediaFileUpload(str(video_path), chunksize=16 * 1024 * 1024, resumable=True)
     request = youtube.videos().insert(
         part=",".join(body.keys()),
         body=body,
         media_body=media,
+        notifySubscribers=True,
     )
     response = None
     try:

@@ -126,6 +126,7 @@ MANUAL_SOURCE = "직접입력"
 TELEGRAM_REFRESH_LOCK = threading.Lock()
 LONG_VIDEO_LOCK = threading.Lock()
 YOUTUBE_POSTPROCESS_LOCK = threading.Lock()
+LONGFORM_AUTO_UPLOAD_LOCK = threading.Lock()
 LONG_VIDEO_WIDTH = 1920
 LONG_VIDEO_HEIGHT = 1080
 LONG_VIDEO_TARGET_SECONDS = 600
@@ -133,6 +134,7 @@ LONG_VIDEO_MAX_SOURCE_COUNT = 40
 LONG_VIDEO_DEFAULT_HEALING_TEMPO = 0.90
 SUBPROCESS_CREATIONFLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 YOUTUBE_STATS_INTERVAL_SECONDS = int(os.getenv("YOUTUBE_STATS_INTERVAL_SECONDS", "3600"))
+LONGFORM_AUTO_UPLOAD_POLL_SECONDS = 30
 KST = ZoneInfo("Asia/Seoul")
 YOUTUBE_SCHEDULE_WINDOWS = (
     (time(12, 0), time(13, 0)),
@@ -2556,6 +2558,8 @@ def run_youtube_upload_job(
     privacy_status: str,
     scheduled_publish_at: datetime | None,
 ) -> None:
+    filename = path.resolve().relative_to(OUTPUT_DIR.resolve()).as_posix()
+    longform = is_longform_video(filename)
     try:
         audit_video_before_upload(path, label=f"manual-youtube-upload-{upload_id}")
         result = upload_video(
@@ -2566,14 +2570,140 @@ def run_youtube_upload_job(
             privacy_status,
             publish_at=scheduled_publish_at,
             contains_synthetic_media=True,
+            default_language="ko" if longform else None,
         )
     except Exception as exc:
         update_youtube_upload_failure(upload_id, str(exc))
         return
     update_youtube_upload_success(upload_id, result, scheduled_publish_at)
-    filename = path.resolve().relative_to(OUTPUT_DIR.resolve()).as_posix()
-    if is_longform_video(filename):
+    if longform:
         postprocess_longform_upload(upload_id, filename, str(result["youtube_video_id"]))
+
+
+def _record_longform_auto_upload_state(status: str, **detail: object) -> None:
+    value = json.dumps({"status": status, **detail}, ensure_ascii=False)
+    with closing(connect(DB_PATH)) as conn:
+        conn.execute(
+            """
+            INSERT INTO app_state (key, value, updated_at)
+            VALUES ('longform_auto_upload', ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+            """,
+            (value,),
+        )
+        conn.commit()
+
+
+def _today_kst_utc_bounds(now: datetime | None = None) -> tuple[str, str]:
+    local = (now or datetime.now(KST)).astimezone(KST)
+    start = local.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = start + timedelta(days=1)
+    return (
+        start.astimezone(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S"),
+        end.astimezone(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S"),
+    )
+
+
+def scheduled_longform_auto_upload_candidate(now: datetime | None = None) -> dict[str, object] | None:
+    config = load_longform_config()
+    schedule = config["longform"].get("schedule") or {}
+    if not bool(schedule.get("enabled", False)) or not bool(schedule.get("auto_upload", False)):
+        return None
+    start, end = _today_kst_utc_bounds(now)
+    with closing(connect(DB_PATH)) as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM healing_longform_jobs
+            WHERE trigger = 'scheduled'
+              AND status = 'ready'
+              AND output_path IS NOT NULL
+              AND created_at >= ? AND created_at < ?
+            ORDER BY id DESC
+            """,
+            (start, end),
+        ).fetchall()
+    for row in rows:
+        job = dict(row)
+        filename = str(job.get("output_path") or "").replace("\\", "/").removeprefix("outputs/")
+        if not filename or latest_youtube_upload(filename):
+            continue
+        try:
+            output_video_path(filename)
+        except FileNotFoundError:
+            continue
+        job["filename"] = filename
+        return job
+    return None
+
+
+def _run_auto_longform_upload(
+    upload_id: int,
+    job_id: int,
+    path: Path,
+    metadata: dict[str, object],
+    scheduled_publish_at: datetime,
+) -> None:
+    run_youtube_upload_job(upload_id, path, metadata, "private", scheduled_publish_at)
+    upload = latest_youtube_upload(path.resolve().relative_to(OUTPUT_DIR.resolve()).as_posix()) or {}
+    status = str(upload.get("status") or "failed")
+    _record_longform_auto_upload_state(
+        "uploaded" if status == "uploaded" else "failed",
+        job_id=job_id,
+        upload_id=upload_id,
+        youtube_url=upload.get("youtube_url"),
+        scheduled_publish_at=scheduled_publish_payload(scheduled_publish_at),
+        error=upload.get("error"),
+    )
+
+
+def queue_scheduled_longform_auto_upload(now: datetime | None = None) -> dict[str, object] | None:
+    if not LONGFORM_AUTO_UPLOAD_LOCK.acquire(blocking=False):
+        return None
+    try:
+        job = scheduled_longform_auto_upload_candidate(now)
+        if not job:
+            return None
+        filename = str(job["filename"])
+        path = output_video_path(filename)
+        metadata = youtube_metadata_for_video(filename)
+        scheduled_publish_at = next_longform_publish_at(now)
+        upload_id = create_youtube_upload_row(filename, metadata, "private", scheduled_publish_at)
+        _record_longform_auto_upload_state(
+            "uploading",
+            job_id=int(job["id"]),
+            upload_id=upload_id,
+            filename=filename,
+            scheduled_publish_at=scheduled_publish_payload(scheduled_publish_at),
+        )
+        thread = threading.Thread(
+            target=_run_auto_longform_upload,
+            args=(upload_id, int(job["id"]), path, metadata, scheduled_publish_at),
+            daemon=True,
+            name=f"longform-auto-upload-{job['id']}",
+        )
+        thread.start()
+        return {"job_id": int(job["id"]), "upload_id": upload_id, "filename": filename}
+    except Exception as exc:
+        _record_longform_auto_upload_state("failed", error=str(exc)[-2000:])
+        return None
+    finally:
+        LONGFORM_AUTO_UPLOAD_LOCK.release()
+
+
+def longform_auto_upload_loop() -> None:
+    while True:
+        queue_scheduled_longform_auto_upload()
+        threading.Event().wait(LONGFORM_AUTO_UPLOAD_POLL_SECONDS)
+
+
+def start_longform_auto_upload_loop() -> None:
+    thread = threading.Thread(
+        target=longform_auto_upload_loop,
+        daemon=True,
+        name="longform-auto-upload",
+    )
+    thread.start()
 
 
 def update_youtube_upload_metadata(upload_id: int, title: str, privacy_status: str) -> None:
@@ -2950,6 +3080,9 @@ def healing_job_payload(job: dict[str, object]) -> dict[str, object]:
     payload = dict(job)
     output_path = str(payload.get("output_path") or "")
     payload["video_url"] = f"/videos/{output_path.removeprefix('outputs/')}" if output_path else None
+    payload["script_available"] = bool(payload.get("script_path"))
+    filename = output_path.replace("\\", "/").removeprefix("outputs/")
+    payload["youtube_upload"] = latest_youtube_upload(filename) if filename else None
     try:
         payload["metadata"] = json.loads(str(payload.get("metadata_json") or "{}"))
     except json.JSONDecodeError:
@@ -3274,6 +3407,26 @@ def api_healing_longform_job(job_id: int):
     if not job:
         return jsonify({"error": "not_found"}), 404
     return jsonify({"job": healing_job_payload(job)})
+
+
+@app.get("/api/healing-longform/jobs/<int:job_id>/script")
+@require_auth
+def api_healing_longform_job_script(job_id: int):
+    job = healing_job(job_id)
+    if not job or not job.get("script_path"):
+        return jsonify({"error": "script_not_found"}), 404
+    path = (BASE_DIR / str(job["script_path"])).resolve()
+    try:
+        path.relative_to((BASE_DIR / "outputs" / "longform").resolve())
+    except ValueError:
+        return jsonify({"error": "invalid_script_path"}), 400
+    if path.name != "script.json" or not path.is_file():
+        return jsonify({"error": "script_not_found"}), 404
+    try:
+        script = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return jsonify({"error": "script_unreadable"}), 500
+    return jsonify({"script": script})
 
 
 @app.delete("/api/videos/<path:filename>")
@@ -3620,6 +3773,7 @@ if __name__ == "__main__":
     mark_interrupted_healing_jobs()
     start_youtube_stats_loop()
     start_longform_scheduler()
+    start_longform_auto_upload_loop()
     port = int(os.getenv("DASHBOARD_PORT", "8050"))
     host = os.getenv("DASHBOARD_HOST", "127.0.0.1")
     app.run(host=host, port=port, debug=False)

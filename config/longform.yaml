@@ -6,6 +6,7 @@ longform:
 
   schedule:
     enabled: true
+    auto_upload: true
     time: 03:10
     days: [0, 1, 2, 3, 4, 5, 6]
     theme_mode: rotate

@@ -19,6 +19,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "fps": 30,
         "schedule": {
             "enabled": True,
+            "auto_upload": False,
             "time": "03:10",
             "days": [0, 1, 2, 3, 4, 5, 6],
             "theme_mode": "rotate",
@@ -146,6 +147,8 @@ def validate_longform_config(config: dict[str, Any]) -> dict[str, Any]:
     root["fps"] = max(24, min(60, int(root.get("fps") or 30)))
 
     schedule = root.setdefault("schedule", {})
+    schedule["enabled"] = bool(schedule.get("enabled", True))
+    schedule["auto_upload"] = bool(schedule.get("auto_upload", False))
     try:
         hour_text, minute_text = str(schedule.get("time") or "03:10").split(":", 1)
         hour, minute = int(hour_text), int(minute_text)

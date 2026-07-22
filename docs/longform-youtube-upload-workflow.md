@@ -81,4 +81,5 @@ AI 음성, AI 생성 이미지, AI 생성 영상, 실제 촬영처럼 보이는 
 ## 현재 영상별 지침
 
 - `docs/longform-upload-jobs/2026-07-18-warm-comfort.md`
-
+- `docs/longform-upload-jobs/2026-07-21-complex-night.md`
+- `docs/longform-upload-jobs/2026-07-22-relationship-fatigue.md`
